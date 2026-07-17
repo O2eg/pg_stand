@@ -1,0 +1,5 @@
+*
+!docker/
+!docker/Dockerfile.*
+!docker/pg-stand-entrypoint.sh
+!docker/pg-stand-pgbouncer.sh

@@ -1,0 +1,40 @@
+api_version: pg_stand/v1
+kind: PostgreSQLStand
+
+metadata:
+  name: pg-stand-single
+
+spec:
+  postgres:
+    version: 17
+    superuser: postgres
+    initdb_args: "--data-checksums --auth-host=scram-sha-256"
+    tls:
+      enabled: false
+    parameters:
+      max_connections: 100
+      shared_buffers: 256MB
+
+  topology:
+    mode: single
+
+  docker:
+    pull_policy: missing
+    network_name: pg-stand-single-network-pg-stand-managed
+    labels:
+      io.pg-stand.profile: single
+
+  storage:
+    root_directory: .pg_stand/pg-stand-single
+
+  nodes:
+    primary:
+      container_name: pg-stand-single-primary-pg-stand-managed
+      bind_address: 127.0.0.1
+      published_port: 55432
+      ssh_published_port: 56432
+      pgbouncer_session_published_port: 57432
+      pgbouncer_transaction_published_port: 58432
+      shm_size: 512m
+      cpu_limit: 1.0
+      memory_limit: 1g

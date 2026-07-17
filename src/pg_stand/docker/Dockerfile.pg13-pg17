@@ -1,0 +1,54 @@
+ARG POSTGRES_BASE_IMAGE=postgres:17
+FROM ${POSTGRES_BASE_IMAGE}
+
+ARG POSTGRES_BASE_IMAGE
+ARG PG_MAJOR=17
+ARG PGBOUNCER_VERSION=1.25.2
+
+LABEL io.pg-stand.image-schema="6" \
+      io.pg-stand.managed="true" \
+      io.pg-stand.resource-kind="managed-image" \
+      io.pg-stand.image-family="pg13-pg17" \
+      io.pg-stand.postgres-major="${PG_MAJOR}" \
+      io.pg-stand.pgbouncer-version="${PGBOUNCER_VERSION}" \
+      io.pg-stand.base-image="${POSTGRES_BASE_IMAGE}" \
+      io.pg-stand.kernel-statistics="execution-and-planning"
+
+COPY docker/pg-stand-entrypoint.sh /usr/local/bin/pg-stand-entrypoint
+COPY docker/pg-stand-pgbouncer.sh /usr/local/bin/pg-stand-pgbouncer
+
+RUN set -eux; \
+    case "${PG_MAJOR}" in 13|14|15|16|17) ;; *) echo "Dockerfile.pg13-pg17 requires PG_MAJOR=13..17" >&2; exit 64 ;; esac; \
+    apt-get update; \
+    pgbouncer_package_version="$(apt-cache madison pgbouncer | awk -v expected="${PGBOUNCER_VERSION}" '$3 ~ ("^" expected "-") { print $3; exit }')"; \
+    test -n "${pgbouncer_package_version}"; \
+    apt-get install -y --no-install-recommends \
+        iproute2 \
+        lshw \
+        openssh-server \
+        "pgbouncer=${pgbouncer_package_version}" \
+        procps \
+        postgresql-${PG_MAJOR}-pg-stat-kcache \
+        postgresql-${PG_MAJOR}-pg-wait-sampling \
+        sysstat \
+        util-linux; \
+    rm -rf /var/lib/apt/lists/*; \
+    install -d -m 0755 /run/sshd; \
+    rm -f /etc/ssh/ssh_host_*; \
+    chmod 0755 /usr/local/bin/pg-stand-entrypoint /usr/local/bin/pg-stand-pgbouncer; \
+    passwd -d root; \
+    printf '%s\n' \
+        'PasswordAuthentication no' \
+        'KbdInteractiveAuthentication no' \
+        'PermitRootLogin prohibit-password' \
+        'PubkeyAuthentication yes' \
+        > /etc/ssh/sshd_config.d/pg_stand.conf; \
+    test -f "$(pg_config --pkglibdir)/auto_explain.so"; \
+    test -f "$(pg_config --sharedir)/extension/pg_stat_statements.control"; \
+    test -f "$(pg_config --sharedir)/extension/pg_buffercache.control"; \
+    test -f "$(pg_config --sharedir)/extension/pg_wait_sampling.control"; \
+    test -f "$(pg_config --sharedir)/extension/pg_stat_kcache.control"; \
+    pgbouncer --version | grep -F "PgBouncer ${PGBOUNCER_VERSION}"
+
+EXPOSE 22 6432 6433
+ENTRYPOINT ["/usr/local/bin/pg-stand-entrypoint"]

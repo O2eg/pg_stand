@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pg-stand"
+version = "0.1.0"
+description = "Declarative Docker PostgreSQL stand manager"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "O2eg", email = "oleg.ispu@yandex.ru" },
+]
+keywords = ["postgresql", "docker", "replication", "testing", "dba"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Database",
+  "Topic :: Software Development :: Testing",
+  "Topic :: System :: Systems Administration",
+]
+dependencies = [
+  "docker>=7.0,<8",
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7.4",
+  "tomli>=2.0; python_version < '3.11'",
+]
+dev = [
+  "pytest>=7.4",
+  "pytest-cov>=4.1",
+  "ruff>=0.6",
+  "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.scripts]
+pg-stand = "pg_stand.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/O2eg/pg_stand"
+Repository = "https://github.com/O2eg/pg_stand"
+Issues = "https://github.com/O2eg/pg_stand/issues"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pg_stand*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+pg_stand = [
+  ".dockerignore",
+  "configs/*.yaml",
+  "docker/Dockerfile.*",
+  "docker/*.sh",
+  "schema/*.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

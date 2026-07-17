@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/O2eg/pg_stand/schema/pg_stand-v1.schema.json",
+  "title": "pg-stand declarative PostgreSQL stand",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {"const": "pg_stand/v1"},
+    "kind": {"const": "PostgreSQLStand"},
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,62}$"}
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["postgres", "topology", "nodes"],
+      "properties": {
+        "postgres": {"$ref": "#/$defs/postgres"},
+        "topology": {"$ref": "#/$defs/topology"},
+        "docker": {"$ref": "#/$defs/docker"},
+        "storage": {"$ref": "#/$defs/storage"},
+        "nodes": {"$ref": "#/$defs/nodes"}
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}$"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,62}$"
+    },
+    "managedName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*-pg-stand-managed$",
+      "maxLength": 63
+    },
+    "postgres": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": {"type": "integer", "minimum": 10, "maximum": 18},
+        "image": {"type": "string", "minLength": 1},
+        "base_image": {"type": "string", "minLength": 1},
+        "superuser": {"$ref": "#/$defs/identifier"},
+        "initdb_args": {"type": "string", "minLength": 1},
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean", "default": false}
+          }
+        },
+        "parameters": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z][a-z0-9_.]*$"},
+          "additionalProperties": {"type": ["string", "number", "boolean"]}
+        }
+      }
+    },
+    "replication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["async", "sync"]},
+        "username": {"$ref": "#/$defs/identifier"},
+        "application_name": {"$ref": "#/$defs/identifier"},
+        "max_wal_senders": {"type": "integer", "minimum": 1},
+        "max_replication_slots": {"type": "integer", "minimum": 1},
+        "wal_keep_size": {"type": "string", "minLength": 1},
+        "wal_keep_segments": {"type": "integer", "minimum": 1},
+        "hot_standby_feedback": {"type": "boolean"}
+      }
+    },
+    "logical_replication": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "publication_name": {"$ref": "#/$defs/identifier"},
+        "subscription_name": {"$ref": "#/$defs/identifier"},
+        "slot_name": {"$ref": "#/$defs/identifier"},
+        "copy_data": {"type": "boolean"}
+      }
+    },
+    "topology": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {"mode": {"const": "single"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "replication"],
+          "properties": {
+            "mode": {"const": "primary_standby"},
+            "replication": {"$ref": "#/$defs/replication"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "replication", "logical_replication"],
+          "properties": {
+            "mode": {"const": "primary_standby_logical"},
+            "replication": {
+              "allOf": [
+                {"$ref": "#/$defs/replication"},
+                {"properties": {"mode": {"const": "sync"}}}
+              ]
+            },
+            "logical_replication": {"$ref": "#/$defs/logical_replication"}
+          }
+        }
+      ]
+    },
+    "docker": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pull_policy": {"enum": ["always", "missing", "never"]},
+        "network_name": {"$ref": "#/$defs/managedName"},
+        "labels": {
+          "type": "object",
+          "additionalProperties": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "root_directory": {
+          "type": "string",
+          "minLength": 1,
+          "not": {"pattern": "(?:^/|^\\.$|(?:^|/)\\.\\.(?:/|$))"}
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "published_port",
+        "ssh_published_port",
+        "pgbouncer_session_published_port",
+        "pgbouncer_transaction_published_port",
+        "cpu_limit",
+        "memory_limit"
+      ],
+      "properties": {
+        "container_name": {"$ref": "#/$defs/managedName"},
+        "published_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "ssh_published_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "pgbouncer_session_published_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "pgbouncer_transaction_published_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "bind_address": {
+          "type": "string",
+          "anyOf": [{"format": "ipv4"}, {"format": "ipv6"}]
+        },
+        "shm_size": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(?:[bBkKmMgG])?$"
+        },
+        "cpu_limit": {"type": "number", "exclusiveMinimum": 0},
+        "memory_limit": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(?:[bBkKmMgG])?$"
+        }
+      }
+    },
+    "nodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary"],
+      "properties": {
+        "primary": {"$ref": "#/$defs/node"},
+        "standby": {"$ref": "#/$defs/node"},
+        "logical": {"$ref": "#/$defs/node"}
+      }
+    }
+  }
+}

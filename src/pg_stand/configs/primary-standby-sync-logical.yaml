@@ -1,0 +1,74 @@
+api_version: pg_stand/v1
+kind: PostgreSQLStand
+
+metadata:
+  name: pg-stand-sync-logical
+
+spec:
+  postgres:
+    version: 17
+    superuser: postgres
+    initdb_args: "--data-checksums --auth-host=scram-sha-256"
+    tls:
+      enabled: false
+    parameters:
+      max_connections: 100
+      shared_buffers: 256MB
+
+  topology:
+    mode: primary_standby_logical
+    replication:
+      mode: sync
+      username: replicator
+      application_name: pg_stand_sync_physical
+      max_wal_senders: 10
+      max_replication_slots: 10
+      wal_keep_size: 256MB
+      wal_keep_segments: 64
+      hot_standby_feedback: true
+    logical_replication:
+      publication_name: pg_stand_all_tables
+      subscription_name: pg_stand_all_tables_sub
+      slot_name: pg_stand_all_tables_slot
+      copy_data: true
+
+  docker:
+    pull_policy: missing
+    network_name: pg-stand-sync-logical-network-pg-stand-managed
+    labels:
+      io.pg-stand.profile: primary-standby-sync-logical
+
+  storage:
+    root_directory: .pg_stand/pg-stand-sync-logical
+
+  nodes:
+    primary:
+      container_name: pg-stand-sync-logical-primary-pg-stand-managed
+      bind_address: 127.0.0.1
+      published_port: 55437
+      ssh_published_port: 56437
+      pgbouncer_session_published_port: 57437
+      pgbouncer_transaction_published_port: 58437
+      shm_size: 512m
+      cpu_limit: 1.0
+      memory_limit: 1g
+    standby:
+      container_name: pg-stand-sync-logical-standby-pg-stand-managed
+      bind_address: 127.0.0.1
+      published_port: 55438
+      ssh_published_port: 56438
+      pgbouncer_session_published_port: 57438
+      pgbouncer_transaction_published_port: 58438
+      shm_size: 512m
+      cpu_limit: 1.0
+      memory_limit: 1g
+    logical:
+      container_name: pg-stand-sync-logical-subscriber-pg-stand-managed
+      bind_address: 127.0.0.1
+      published_port: 55439
+      ssh_published_port: 56439
+      pgbouncer_session_published_port: 57439
+      pgbouncer_transaction_published_port: 58439
+      shm_size: 512m
+      cpu_limit: 1.0
+      memory_limit: 1g

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pg_stand.config import NodeConfig
@@ -615,7 +615,7 @@ class ObservationMixin:
             "project": self.config.metadata.name,
             "status": level,
             "exit_code": {"healthy": 0, "degraded": 1, "unavailable": 2}[level],
-            "checked_at": datetime.now(UTC).isoformat(),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
             "checks": checks,
         }
 
@@ -721,7 +721,7 @@ class ObservationMixin:
             if name and not name.endswith(MANAGED_RESOURCE_SUFFIX):
                 continue
             yield {
-                "time": datetime.fromtimestamp(int(event.get("time", 0)), UTC).isoformat(),
+                "time": datetime.fromtimestamp(int(event.get("time", 0)), timezone.utc).isoformat(),
                 "type": event.get("Type"),
                 "action": event.get("Action") or event.get("status"),
                 "id": event.get("id") or actor.get("ID"),
@@ -735,7 +735,7 @@ class ObservationMixin:
 
     def overview(self) -> dict[str, Any]:
         result: dict[str, Any] = {
-            "observed_at": datetime.now(UTC).isoformat(),
+            "observed_at": datetime.now(timezone.utc).isoformat(),
             "status": self.status(),
             "resources": self.resources(),
         }

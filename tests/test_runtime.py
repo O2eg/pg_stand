@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -894,6 +894,21 @@ def test_pgbouncer_has_separate_pool_modes_and_certificate_only_tls() -> None:
     assert "hostssl all all all cert map=pg_stand_tls" in script
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-07-17 12:01:00+00", "2026-07-17T12:01:00+00:00"),
+        ("2026-07-17 15:01:00+03", "2026-07-17T12:01:00+00:00"),
+        ("2026-07-17 12:01:00 UTC", "2026-07-17T12:01:00+00:00"),
+    ],
+)
+def test_log_timestamp_accepts_postgresql_timezone_formats(value: str, expected: str) -> None:
+    parsed = StandManager._log_timestamp(value)
+
+    assert parsed is not None
+    assert parsed.isoformat() == expected
+
+
 def test_log_records_merge_sort_and_filter() -> None:
     config = load_config(ASSET_ROOT / "configs" / "primary-standby-sync.yaml", environment={})
     manager = StandManager(config, client=object())
@@ -931,7 +946,7 @@ def test_log_records_merge_sort_and_filter() -> None:
     with patch.object(manager, "_csv_log_records", side_effect=lambda node: rows[node]):
         result = manager.log_records(
             "all",
-            since=datetime(2026, 7, 17, 12, 0, 30, tzinfo=UTC),
+            since=datetime(2026, 7, 17, 12, 0, 30, tzinfo=timezone.utc),
             severity="error",
             contains="target",
         )

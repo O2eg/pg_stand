@@ -8,7 +8,7 @@ import re
 import sys
 import time
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import yaml
@@ -39,7 +39,7 @@ def _emit_stream(value: Any, *, as_json: bool) -> None:
 
 
 def _moment(value: str, *, now: datetime | None = None) -> datetime:
-    reference = now or datetime.now(UTC)
+    reference = now or datetime.now(timezone.utc)
     match = _DURATION_RE.fullmatch(value.strip().lower())
     if match:
         factors = {"s": 1, "m": 60, "h": 3600, "d": 86400}
@@ -52,8 +52,8 @@ def _moment(value: str, *, now: datetime | None = None) -> datetime:
             f"invalid time {value!r}; use an ISO-8601 timestamp or duration such as 30m"
         ) from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _health_options(args: argparse.Namespace) -> dict[str, Any]:
@@ -227,7 +227,7 @@ def _execute(args: argparse.Namespace, config: StandConfig) -> int:
         elif args.format == "raw" and args.node != "all" and not has_filters and not args.json:
             manager.logs(args.node, tail=args.tail)
         else:
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             records = manager.log_records(
                 args.node,
                 tail=args.tail,
@@ -244,7 +244,7 @@ def _execute(args: argparse.Namespace, config: StandConfig) -> int:
     elif args.command == "events":
         if args.follow and args.until:
             raise DockerRuntimeError("events --follow cannot be combined with --until")
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         since = int(_moment(args.since, now=now).timestamp())
         until = (
             None

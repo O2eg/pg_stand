@@ -8,7 +8,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -414,13 +414,17 @@ fi
         text = value.strip()
         if text.endswith(" UTC"):
             text = text[:-4] + "+00:00"
+        elif len(text) >= 3 and text[-3] in "+-" and text[-2:].isdigit():
+            # PostgreSQL can emit a whole-hour offset such as +00. Python 3.10
+            # requires the equivalent ISO 8601 form with explicit minutes.
+            text += ":00"
         try:
             parsed = datetime.fromisoformat(text.replace(" ", "T", 1))
         except ValueError:
             return None
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
 
     def log_records(
         self,
@@ -478,7 +482,7 @@ fi
                 ).casefold()
                 if needle not in haystack:
                     continue
-            record["_timestamp"] = timestamp or datetime.min.replace(tzinfo=UTC)
+            record["_timestamp"] = timestamp or datetime.min.replace(tzinfo=timezone.utc)
             filtered.append(record)
         filtered.sort(key=lambda item: (item["_timestamp"], item["node"], item["session_id"]))
         if tail >= 0:

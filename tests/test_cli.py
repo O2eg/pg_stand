@@ -160,11 +160,11 @@ def test_new_observation_and_management_command_shapes() -> None:
 
 
 def test_relative_and_iso_times_are_supported() -> None:
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
 
-    now = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
+    now = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
 
-    assert _moment("30m", now=now) == datetime(2026, 7, 17, 11, 30, tzinfo=UTC)
+    assert _moment("30m", now=now) == datetime(2026, 7, 17, 11, 30, tzinfo=timezone.utc)
     assert _moment("2026-07-17T14:00:00+02:00") == now
 
 

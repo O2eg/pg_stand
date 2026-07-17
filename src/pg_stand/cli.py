@@ -11,9 +11,9 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import docker
 import yaml
 
-import docker
 from pg_stand.assets import initialize_project
 from pg_stand.cli_parser import _parser
 from pg_stand.config import StandConfig, load_config

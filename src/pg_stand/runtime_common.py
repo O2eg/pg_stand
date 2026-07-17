@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import docker
 from docker.errors import (
     DockerException,
 )
 
-import docker
 from pg_stand.config import MANAGED_RESOURCE_SUFFIX, StandConfig
 from pg_stand.errors import DockerRuntimeError
 

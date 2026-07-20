@@ -74,6 +74,19 @@ def _parser() -> argparse.ArgumentParser:
         help="override spec.postgres.tls.enabled for this command",
     )
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
+    parser.add_argument(
+        "--machine",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--request-id",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--parameters-json",
+        help=argparse.SUPPRESS,
+    )
 
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("active", help="discover the active pg-stand lease without a config")
@@ -152,6 +165,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     apply_config.add_argument(
         "--dry-run", action="store_true", help="show the plan without changing anything"
+    )
+    apply_config.add_argument(
+        "--plan-hash",
+        help="apply only if the current plan still matches this hash",
     )
     apply_config.add_argument(
         "--timeout", type=_positive_float, default=180.0, help="readiness timeout in seconds"

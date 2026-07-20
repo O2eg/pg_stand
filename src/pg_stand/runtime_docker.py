@@ -391,7 +391,7 @@ class DockerResourceMixin:
                 )
                 result["containers_removed"] = True
             if remove_storage:
-                result["storage_before"] = self.storage_usage()
+                result["storage_before"] = self.storage_usage(ensure_image=False)
                 self.storage_clean(require_absent_containers=True)
                 result["storage_removed"] = True
             if remove_credentials:

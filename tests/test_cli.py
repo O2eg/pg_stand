@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from pg_stand.cli import _moment, _parser, main
+from pg_stand.cli import _moment, _parser, _postgres_parameters_override, main
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSET_ROOT = ROOT / "src" / "pg_stand"
@@ -127,7 +128,7 @@ def test_resources_and_apply_modes_are_explicit() -> None:
     assert restart_config.restart is True
 
 
-def test_active_is_the_only_configless_runtime_command(capsys) -> None:
+def test_active_and_capabilities_are_configless_commands(capsys) -> None:
     with patch(
         "pg_stand.cli.discover_active_stand",
         return_value={"active": True, "project": "pg-stand-single", "nodes": {}},
@@ -137,6 +138,72 @@ def test_active_is_the_only_configless_runtime_command(capsys) -> None:
     assert '"project": "pg-stand-single"' in capsys.readouterr().out
     assert main(["status"]) == 2
     assert "--config is required for status" in capsys.readouterr().err
+
+    assert main(["--json", "capabilities"]) == 0
+    capabilities = json.loads(capsys.readouterr().out)
+    assert capabilities["contract_version"] == "pg_play/component/v1"
+
+
+def test_machine_capabilities_use_versioned_envelope(capsys) -> None:
+    result = main(
+        [
+            "--machine",
+            "--request-id",
+            "stand-capabilities",
+            "capabilities",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["component"] == "pg_stand"
+    assert payload["request_id"] == "stand-capabilities"
+    assert payload["status"] == "succeeded"
+    assert payload["result"]["contract_version"] == "pg_play/component/v1"
+
+
+def test_machine_mode_refuses_password_bearing_dsn(capsys) -> None:
+    result = main(
+        [
+            "--machine",
+            "--request-id",
+            "stand-secret-check",
+            "--config",
+            str(ASSET_ROOT / "configs" / "single.yaml"),
+            "dsn",
+            "--show-password",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 4
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "unsupported"
+
+
+def test_configurator_artifact_parameters_are_decoded(tmp_path: Path) -> None:
+    artifact = tmp_path / "candidate.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "schema_version": "pg_configurator/v1",
+                "postgresql_conf": {
+                    "log_statement": "'ddl'",
+                    "synchronous_standby_names": "''",
+                    "log_line_prefix": "'%m user=%u O''Reilly '",
+                    "work_mem": "16MB",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _postgres_parameters_override(str(artifact)) == {
+        "log_statement": "ddl",
+        "synchronous_standby_names": "",
+        "log_line_prefix": "%m user=%u O'Reilly ",
+        "work_mem": "16MB",
+    }
 
 
 def test_new_observation_and_management_command_shapes() -> None:

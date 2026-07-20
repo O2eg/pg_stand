@@ -27,37 +27,39 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _PARAMETER_RE = re.compile(r"^[a-z][a-z0-9_.]*$")
 _MEMORY_LIMIT_RE = re.compile(r"^[1-9][0-9]*(?:[bkmg])?$", re.IGNORECASE)
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
-_FORBIDDEN_PARAMETERS = {
-    "data_directory",
-    "hba_file",
-    "hot_standby",
-    "hot_standby_feedback",
-    "ident_file",
-    "listen_addresses",
-    "log_destination",
-    "log_directory",
-    "log_file_mode",
-    "log_filename",
-    "log_rotation_age",
-    "log_rotation_size",
-    "log_truncate_on_rotation",
-    "logging_collector",
-    "max_replication_slots",
-    "max_wal_senders",
-    "password_encryption",
-    "primary_conninfo",
-    "primary_slot_name",
-    "shared_preload_libraries",
-    "ssl",
-    "ssl_ca_file",
-    "ssl_cert_file",
-    "ssl_key_file",
-    "synchronous_commit",
-    "synchronous_standby_names",
-    "wal_keep_segments",
-    "wal_keep_size",
-    "wal_level",
-}
+MANAGED_POSTGRES_PARAMETERS = frozenset(
+    {
+        "data_directory",
+        "hba_file",
+        "hot_standby",
+        "hot_standby_feedback",
+        "ident_file",
+        "listen_addresses",
+        "log_destination",
+        "log_directory",
+        "log_file_mode",
+        "log_filename",
+        "log_rotation_age",
+        "log_rotation_size",
+        "log_truncate_on_rotation",
+        "logging_collector",
+        "max_replication_slots",
+        "max_wal_senders",
+        "password_encryption",
+        "primary_conninfo",
+        "primary_slot_name",
+        "shared_preload_libraries",
+        "ssl",
+        "ssl_ca_file",
+        "ssl_cert_file",
+        "ssl_key_file",
+        "synchronous_commit",
+        "synchronous_standby_names",
+        "wal_keep_segments",
+        "wal_keep_size",
+        "wal_level",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -331,7 +333,7 @@ def _parameters(value: Any) -> dict[str, str]:
         name = _text(raw_name, "PostgreSQL parameter name")
         if not _PARAMETER_RE.fullmatch(name):
             raise ConfigError(f"invalid PostgreSQL parameter name: {name}")
-        if name in _FORBIDDEN_PARAMETERS:
+        if name in MANAGED_POSTGRES_PARAMETERS:
             raise ConfigError(f"PostgreSQL parameter {name} is managed by pg-stand")
         if isinstance(raw_value, (dict, list)) or raw_value is None:
             raise ConfigError(f"PostgreSQL parameter {name} must be a scalar")
@@ -491,6 +493,7 @@ def load_config(
     postgres_version: int | None = None,
     tls_enabled: bool | None = None,
     project_directory: str | Path | None = None,
+    postgres_parameters: dict[str, Any] | None = None,
 ) -> StandConfig:
     source = Path(path).expanduser().resolve()
     if not source.is_file():
@@ -534,6 +537,9 @@ def load_config(
     version = _positive_int(_required(postgres_raw, "version", "spec.postgres"), "postgres.version")
     _validate_major(version)
     tls_raw = _mapping(postgres_raw.get("tls", {}), "spec.postgres.tls", {"enabled"})
+    parameters = _parameters(postgres_raw.get("parameters", {}))
+    if postgres_parameters is not None:
+        parameters.update(_parameters(postgres_parameters))
     postgres = PostgresConfig(
         version=version,
         image=(
@@ -551,7 +557,7 @@ def load_config(
         initdb_args=_initdb_args(
             postgres_raw.get("initdb_args", "--data-checksums --auth-host=scram-sha-256")
         ),
-        parameters=_parameters(postgres_raw.get("parameters", {})),
+        parameters=parameters,
         tls=TLSConfig(
             enabled=_boolean(tls_raw.get("enabled", False), "postgres.tls.enabled"),
         ),

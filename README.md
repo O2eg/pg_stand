@@ -858,6 +858,11 @@ recovery connection settings, cannot be overridden through `spec.postgres.parame
 Diagnostic thresholds and statistics settings are overridable. The tool also owns the
 `initdb --pgdata` and `--waldir` paths.
 
+## Orchestrator integration
+
+The normal lifecycle CLI remains human-oriented. Authors of `pg_play`-compatible
+orchestrators can use the separate [versioned machine contract](docs/pg_play-integration.md).
+
 ## Development
 
 ```bash
@@ -894,7 +899,7 @@ python -m build
 python -m twine check dist/*
 ```
 
-A tag matching the package version, for example `v0.1.0`, runs unit and Docker integration
+A tag matching the package version, for example `v0.2.0`, runs unit and Docker integration
 tests, builds the wheel and source distribution, smoke-tests the installed wheel, and publishes
 through PyPI Trusted Publishing. The GitHub `pypi` environment and a PyPI trusted publisher for
 `O2eg/pg_stand` and `.github/workflows/publish.yml` must be configured before the first release.

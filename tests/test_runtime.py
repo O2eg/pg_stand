@@ -721,8 +721,11 @@ def test_plan_is_read_only_and_classifies_offline_changes_conservatively(tmp_pat
     changed_manager = StandManager(changed, client=client)
 
     result = changed_manager.plan()
+    repeated = changed_manager.plan()
 
     assert result["required_action"] == "restart"
+    assert result["desired_state_hash"] == changed.config_hash
+    assert result["plan_hash"] == repeated["plan_hash"]
     assert result["parameter_changes"] == [
         {
             "name": "work_mem",
@@ -1278,6 +1281,35 @@ def test_read_only_storage_report_does_not_build_a_missing_image(tmp_path: Path)
     assert "measurement_error" in result
     assert result["total_bytes"] == 0
     client.images.build.assert_not_called()
+
+
+def test_cleanup_storage_does_not_build_a_missing_image(tmp_path: Path) -> None:
+    config = load_config(
+        ASSET_ROOT / "configs" / "single.yaml",
+        environment={},
+        project_directory=tmp_path,
+    )
+    client = MagicMock()
+    client.ping.return_value = True
+    manager = StandManager(config, client=client)
+
+    with (
+        patch.object(manager, "_acquire_active_lock"),
+        patch.object(manager, "_release_active_lock"),
+        patch.object(manager, "_has_running_owned_nodes", return_value=False),
+        patch.object(manager, "storage_clean") as storage_clean,
+        patch.object(manager, "storage_usage", return_value={"total_bytes": 0}) as usage,
+    ):
+        result = manager.cleanup(
+            remove_containers=False,
+            remove_storage=True,
+            remove_images=False,
+            remove_cache=False,
+        )
+
+    usage.assert_called_once_with(ensure_image=False)
+    storage_clean.assert_called_once_with(require_absent_containers=True)
+    assert result["storage_removed"] is True
 
 
 def test_cleanup_status_uses_sized_api_with_project_filters() -> None:

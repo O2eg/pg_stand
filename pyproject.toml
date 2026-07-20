@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pg-stand"
-version = "0.1.0"
+version = "0.2.0"
 description = "Declarative Docker PostgreSQL stand manager"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -55,6 +55,7 @@ Repository = "https://github.com/O2eg/pg_stand"
 Issues = "https://github.com/O2eg/pg_stand/issues"
 
 [tool.setuptools]
+package-dir = {"" = "src"}
 include-package-data = false
 
 [tool.setuptools.packages.find]

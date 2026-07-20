@@ -8,3 +8,7 @@ class ConfigError(PgStandError):
 
 class DockerRuntimeError(PgStandError):
     """Docker could not reach the requested stand state."""
+
+
+class PreconditionError(PgStandError):
+    """A caller-provided plan or state precondition is no longer true."""

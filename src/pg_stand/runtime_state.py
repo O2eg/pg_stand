@@ -15,6 +15,7 @@ from docker.errors import ContainerError, DockerException, ImageNotFound
 
 from pg_stand.credentials import credential_paths
 from pg_stand.errors import DockerRuntimeError
+from pg_stand.orchestration import canonical_hash
 from pg_stand.runtime_common import (
     PGLOG,
     PGWAL,
@@ -178,6 +179,8 @@ class StateStorageMixin:
             "can_apply": True,
             "configuration_changes": [],
             "parameter_changes": [],
+            "desired_state_hash": self.config.config_hash,
+            "applied_state_hash": state.get("config_hash") if state else None,
         }
         if state is None:
             result.update(
@@ -187,10 +190,10 @@ class StateStorageMixin:
                     "reason": "the stand has no applied configuration state",
                 }
             )
-            return result
+            return self._finalize_plan(result)
         if state.get("config_hash") == self.config.config_hash:
             result["reason"] = "the desired and applied configurations match"
-            return result
+            return self._finalize_plan(result)
 
         old_document = state.get("document")
         if isinstance(old_document, dict):
@@ -217,7 +220,7 @@ class StateStorageMixin:
                     ),
                 }
             )
-            return result
+            return self._finalize_plan(result)
 
         previous_parameters = state.get("parameters") or {}
         if not isinstance(previous_parameters, dict):
@@ -228,7 +231,7 @@ class StateStorageMixin:
                     "reason": "the applied parameter state is unavailable",
                 }
             )
-            return result
+            return self._finalize_plan(result)
         changed_names = {
             name
             for name in set(previous_parameters) | set(self.config.postgres.parameters)
@@ -274,6 +277,22 @@ class StateStorageMixin:
             result["reason"] = "container, topology, image, resource, or managed setting changed"
         else:
             result["reason"] = "PostgreSQL parameters changed"
+        return self._finalize_plan(result)
+
+    @staticmethod
+    def _finalize_plan(result: dict[str, Any]) -> dict[str, Any]:
+        identity = {
+            key: result.get(key)
+            for key in (
+                "project",
+                "required_action",
+                "configuration_changes",
+                "parameter_changes",
+                "desired_state_hash",
+                "applied_state_hash",
+            )
+        }
+        result["plan_hash"] = canonical_hash(identity)
         return result
 
     def _assert_up_configuration_is_applied(self) -> None:

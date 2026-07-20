@@ -58,6 +58,22 @@ def test_tls_override_enables_certificate_mode_for_any_topology(filename: str) -
     assert config.postgres.tls.enabled is True
 
 
+def test_postgres_parameter_override_merges_without_rewriting_source() -> None:
+    source = ASSET_ROOT / "configs" / "single.yaml"
+    original = source.read_text(encoding="utf-8")
+
+    config = load_config(
+        source,
+        environment={},
+        postgres_parameters={"shared_buffers": "2GB", "work_mem": "8MB"},
+    )
+
+    assert config.postgres.parameters["max_connections"] == "100"
+    assert config.postgres.parameters["shared_buffers"] == "2GB"
+    assert config.postgres.parameters["work_mem"] == "8MB"
+    assert source.read_text(encoding="utf-8") == original
+
+
 def test_tls_defaults_to_disabled_when_block_is_absent(tmp_path: Path) -> None:
     def change(document: dict) -> None:
         document["spec"]["postgres"].pop("tls")

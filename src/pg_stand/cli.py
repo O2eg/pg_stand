@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import re
 import sys
 import time
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import docker
@@ -17,7 +20,8 @@ import yaml
 from pg_stand.assets import initialize_project
 from pg_stand.cli_parser import _parser
 from pg_stand.config import StandConfig, load_config
-from pg_stand.errors import DockerRuntimeError, PgStandError
+from pg_stand.errors import DockerRuntimeError, PgStandError, PreconditionError
+from pg_stand.orchestration import EXIT_CODES, envelope, static_capabilities
 from pg_stand.runtime import StandManager, discover_active_stand
 
 _DURATION_RE = re.compile(r"^(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>[smhd])$")
@@ -67,6 +71,40 @@ def _health_options(args: argparse.Namespace) -> dict[str, Any]:
 
 def _manager(config: StandConfig) -> StandManager:
     return StandManager(config, output=lambda message: print(message, file=sys.stderr))
+
+
+def _postgres_parameters_override(value: str | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    try:
+        if value == "-":
+            document = json.load(sys.stdin)
+        else:
+            document = json.loads(Path(value).expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DockerRuntimeError(f"cannot read PostgreSQL parameters JSON: {exc}") from exc
+    if not isinstance(document, dict):
+        raise DockerRuntimeError("PostgreSQL parameters JSON must be an object")
+    configurator_artifact = "postgresql_conf" in document
+    if configurator_artifact:
+        document = document["postgresql_conf"]
+    elif isinstance(document.get("postgresql"), dict) and "parameters" in document["postgresql"]:
+        document = document["postgresql"]["parameters"]
+    if not isinstance(document, dict):
+        raise DockerRuntimeError("PostgreSQL parameters JSON must resolve to a parameter object")
+    if configurator_artifact:
+        document = {
+            name: _decode_postgresql_conf_value(parameter_value)
+            for name, parameter_value in document.items()
+        }
+    return document
+
+
+def _decode_postgresql_conf_value(value: Any) -> Any:
+    """Convert pg_configurator's rendered string literals to semantic values."""
+    if isinstance(value, str) and len(value) >= 2 and value.startswith("'") and value.endswith("'"):
+        return value[1:-1].replace("''", "'")
+    return value
 
 
 def _watch(manager: StandManager, args: argparse.Namespace, *, replication_only: bool) -> int:
@@ -150,6 +188,13 @@ def _execute(args: argparse.Namespace, config: StandConfig) -> int:
             raise DockerRuntimeError(
                 "apply requires --reload or --restart unless --dry-run is used"
             )
+        if args.plan_hash:
+            current_plan = manager.plan(requested_mode=requested_mode)
+            if current_plan["plan_hash"] != args.plan_hash:
+                raise PreconditionError(
+                    "stale plan: expected "
+                    f"{args.plan_hash}, current plan is {current_plan['plan_hash']}"
+                )
         _emit(
             manager.apply(
                 mode=requested_mode,
@@ -300,9 +345,165 @@ def _execute(args: argparse.Namespace, config: StandConfig) -> int:
     return 0
 
 
+def _command_name(args: argparse.Namespace) -> str:
+    nested = (
+        "replication_command",
+        "storage_command",
+        "logical_command",
+        "standby_command",
+        "node_command",
+        "image_command",
+        "cleanup_command",
+    )
+    parts = [args.command]
+    parts.extend(str(value) for name in nested if (value := getattr(args, name, None)))
+    return " ".join(parts)
+
+
+def _machine_supported(args: argparse.Namespace) -> bool:
+    if args.command in {"psql", "ssh", "watch"}:
+        return False
+    if args.command == "dsn" and args.show_password:
+        return False
+    if args.command in {"logs", "events"} and args.follow:
+        return False
+    return True
+
+
+def _decode_machine_result(output: str) -> Any:
+    text = output.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"stdout": text}
+
+
+def _machine_status(args: argparse.Namespace, result: Any, exit_code: int) -> str:
+    if args.command == "plan" and isinstance(result, dict):
+        if result.get("required_action") == "blocked":
+            return "blocked"
+    if exit_code == 0:
+        return "succeeded"
+    if exit_code in {1, EXIT_CODES["partial"]}:
+        return "partial"
+    return "failed"
+
+
+def _emit_machine(
+    args: argparse.Namespace,
+    *,
+    result: Any = None,
+    status: str = "succeeded",
+    error: dict[str, Any] | None = None,
+    config: StandConfig | None = None,
+) -> None:
+    artifacts = []
+    if config is not None:
+        artifacts.append(
+            {
+                "kind": "StandConfiguration",
+                "schema_version": "pg_stand/v1",
+                "hash": config.config_hash,
+                "path": str(config.source),
+            }
+        )
+    _emit(
+        envelope(
+            _command_name(args),
+            status,
+            request_id=args.request_id,
+            result=result,
+            artifacts=artifacts,
+            error=error,
+        ),
+        as_json=True,
+    )
+
+
+def _run_machine(args: argparse.Namespace) -> int:
+    if not _machine_supported(args):
+        _emit_machine(
+            args,
+            status="failed",
+            error={
+                "code": "unsupported",
+                "message": (
+                    "interactive or unbounded streaming command is not available in machine mode"
+                ),
+            },
+        )
+        return EXIT_CODES["unsupported"]
+
+    config: StandConfig | None = None
+    try:
+        args.json = True
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            if args.command == "active":
+                result = discover_active_stand()
+                exit_code = 0 if result["active"] else 1
+                print(json.dumps(result))
+            elif args.command == "init":
+                result = initialize_project(args.directory, force=args.force)
+                exit_code = 0
+                print(json.dumps(result))
+            elif args.command == "capabilities" and args.config is None:
+                result = static_capabilities()
+                exit_code = 0
+                print(json.dumps(result))
+            else:
+                if args.config is None:
+                    raise DockerRuntimeError(f"--config is required for {args.command}")
+                config = load_config(
+                    args.config,
+                    postgres_version=args.postgres_version,
+                    tls_enabled=args.tls,
+                    postgres_parameters=_postgres_parameters_override(args.parameters_json),
+                )
+                exit_code = _execute(args, config)
+        result = _decode_machine_result(output.getvalue())
+        if args.command == "capabilities" and config is not None and isinstance(result, dict):
+            result = {"contract": static_capabilities(), "target": result}
+        status = _machine_status(args, result, exit_code)
+        _emit_machine(args, result=result, status=status, config=config)
+        if status == "blocked":
+            return EXIT_CODES["precondition_failed"]
+        if exit_code == 1:
+            return EXIT_CODES["partial"]
+        return exit_code
+    except PreconditionError as exc:
+        _emit_machine(
+            args,
+            status="blocked",
+            error={"code": "precondition_failed", "message": str(exc)},
+            config=config,
+        )
+        return EXIT_CODES["precondition_failed"]
+    except (PgStandError, docker.errors.DockerException) as exc:
+        _emit_machine(
+            args,
+            status="failed",
+            error={"code": "execution_error", "message": str(exc)},
+            config=config,
+        )
+        return EXIT_CODES["execution_error"]
+    except KeyboardInterrupt:
+        _emit_machine(
+            args,
+            status="cancelled",
+            error={"code": "cancelled", "message": "interrupted"},
+            config=config,
+        )
+        return EXIT_CODES["cancelled"]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.machine:
+        return _run_machine(args)
     try:
         if args.command == "active":
             result = discover_active_stand()
@@ -314,12 +515,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 as_json=args.json,
             )
             return 0
+        if args.command == "capabilities" and args.config is None:
+            _emit(static_capabilities(), as_json=args.json)
+            return 0
         if args.config is None:
             raise DockerRuntimeError(f"--config is required for {args.command}")
         config = load_config(
             args.config,
             postgres_version=args.postgres_version,
             tls_enabled=args.tls,
+            postgres_parameters=_postgres_parameters_override(args.parameters_json),
         )
         return _execute(args, config)
     except (PgStandError, docker.errors.DockerException) as exc:

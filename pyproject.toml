@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pg-stand"
 version = "0.2.1"
-description = "Declarative Docker PostgreSQL stand manager"
+description = "Declarative Docker testbed manager for PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

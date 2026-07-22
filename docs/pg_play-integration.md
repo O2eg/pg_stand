@@ -6,10 +6,15 @@ observation commands remain the supported human interface.
 `pg_stand` supports the hidden `pg_play/component/v1` machine transport:
 
 ```bash
-pg-stand --machine --request-id stand-001 capabilities
+pg-stand --machine --request-id stand-001 --component-capabilities
 pg-stand --machine --request-id stand-002 --config stand.yaml validate
 pg-stand --machine --request-id stand-003 --config stand.yaml plan
 ```
+
+The capability document uses `pg_play/capabilities/v1`. Every command declares
+the common boolean fields `mutates_target`, `machine_output`, and
+`accepts_plan_hash`. The public `capabilities` subcommand remains available.
+The `machine_interface` object records the canonical hidden option names.
 
 To plan a generated `pg_configurator` candidate without rewriting the stand
 source, pass a JSON parameter mapping through standard input:

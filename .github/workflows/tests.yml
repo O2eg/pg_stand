@@ -2,11 +2,21 @@ name: tests
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.10", "3.12"]
@@ -21,7 +31,7 @@ jobs:
       - run: pytest
 
   tls-integration:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: unit
     timeout-minutes: 25
     steps:

@@ -6,7 +6,7 @@ metadata:
 
 spec:
   postgres:
-    version: 17
+    version: 18
     superuser: postgres
     initdb_args: "--data-checksums --auth-host=scram-sha-256"
     tls:

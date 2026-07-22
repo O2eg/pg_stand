@@ -84,6 +84,14 @@ def test_recreate_clear_data_is_an_explicit_flag() -> None:
     assert args.clear_data is True
 
 
+def test_pg_version_is_canonical_and_postgres_version_remains_an_alias() -> None:
+    canonical = _parser().parse_args(["--pg-version", "18", "validate"])
+    compatibility = _parser().parse_args(["--postgres-version", "18", "validate"])
+
+    assert canonical.postgres_version == 18
+    assert compatibility.postgres_version == 18
+
+
 def test_storage_subcommands_are_declarative() -> None:
     args = _parser().parse_args(
         ["--config", str(ASSET_ROOT / "configs" / "single.yaml"), "storage", "status"]
@@ -150,7 +158,7 @@ def test_machine_capabilities_use_versioned_envelope(capsys) -> None:
             "--machine",
             "--request-id",
             "stand-capabilities",
-            "capabilities",
+            "--component-capabilities",
         ]
     )
 
@@ -160,6 +168,10 @@ def test_machine_capabilities_use_versioned_envelope(capsys) -> None:
     assert payload["request_id"] == "stand-capabilities"
     assert payload["status"] == "succeeded"
     assert payload["result"]["contract_version"] == "pg_play/component/v1"
+    assert payload["result"]["capability_schema_version"] == "pg_play/capabilities/v1"
+    assert (
+        payload["result"]["machine_interface"]["capabilities_option"] == "--component-capabilities"
+    )
 
 
 def test_machine_mode_refuses_password_bearing_dsn(capsys) -> None:

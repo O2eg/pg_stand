@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pg-stand"
-version = "0.2.0"
+version = "0.2.1"
 description = "Declarative Docker PostgreSQL stand manager"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,14 +36,16 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-  "pytest>=7.4",
+  "pytest>=8.3,<9",
   "tomli>=2.0; python_version < '3.11'",
 ]
 dev = [
-  "pytest>=7.4",
-  "pytest-cov>=4.1",
-  "ruff>=0.6",
+  "build>=1.2,<2",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<8",
+  "ruff>=0.12,<1",
   "tomli>=2.0; python_version < '3.11'",
+  "twine>=6,<7",
 ]
 
 [project.scripts]

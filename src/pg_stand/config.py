@@ -93,8 +93,8 @@ class PostgresConfig:
     def base_image_name(self) -> str:
         if self.base_image:
             return self._resolve_image_template(self.base_image, "postgres.base_image")
-        if self.version == 10:
-            return "postgres:10-bullseye"
+        if self.version in {10, 11}:
+            return f"postgres:{self.version}-bullseye"
         return f"postgres:{self.version}"
 
     @property

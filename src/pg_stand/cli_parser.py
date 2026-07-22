@@ -63,7 +63,9 @@ def _parser() -> argparse.ArgumentParser:
         help="path to a pg_stand/v1 YAML configuration; optional only for active",
     )
     parser.add_argument(
+        "--pg-version",
         "--postgres-version",
+        dest="postgres_version",
         type=int,
         help="override spec.postgres.version without editing the configuration",
     )
@@ -87,8 +89,13 @@ def _parser() -> argparse.ArgumentParser:
         "--parameters-json",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--component-capabilities",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
 
-    commands = parser.add_subparsers(dest="command", required=True)
+    commands = parser.add_subparsers(dest="command")
     commands.add_parser("active", help="discover the active pg-stand lease without a config")
     init = commands.add_parser(
         "init", help="write editable example profiles and the JSON Schema into a project"

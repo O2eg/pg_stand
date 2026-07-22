@@ -9,6 +9,12 @@ from typing import Any
 from pg_stand import __version__
 
 CONTRACT_VERSION = "pg_play/component/v1"
+CAPABILITY_SCHEMA_VERSION = "pg_play/capabilities/v1"
+MACHINE_INTERFACE = {
+    "machine_flag": "--machine",
+    "request_id_option": "--request-id",
+    "capabilities_option": "--component-capabilities",
+}
 COMPONENT = "pg_stand"
 
 EXIT_CODES = {
@@ -35,23 +41,34 @@ def canonical_hash(value: Any) -> str:
 
 def static_capabilities() -> dict[str, Any]:
     return {
+        "capability_schema_version": CAPABILITY_SCHEMA_VERSION,
+        "machine_interface": MACHINE_INTERFACE,
         "contract_version": CONTRACT_VERSION,
         "component": COMPONENT,
         "component_version": __version__,
         "commands": {
-            "validate": {"mutates_target": False, "machine_output": True},
-            "show": {"mutates_target": False, "machine_output": True},
-            "plan": {"mutates_target": False, "machine_output": True},
-            "status": {"mutates_target": False, "machine_output": True},
-            "health": {"mutates_target": False, "machine_output": True},
-            "up": {"mutates_target": True, "machine_output": True},
+            "capabilities": {
+                "mutates_target": False,
+                "machine_output": True,
+                "accepts_plan_hash": False,
+            },
+            "validate": {
+                "mutates_target": False,
+                "machine_output": True,
+                "accepts_plan_hash": False,
+            },
+            "show": {"mutates_target": False, "machine_output": True, "accepts_plan_hash": False},
+            "plan": {"mutates_target": False, "machine_output": True, "accepts_plan_hash": False},
+            "status": {"mutates_target": False, "machine_output": True, "accepts_plan_hash": False},
+            "health": {"mutates_target": False, "machine_output": True, "accepts_plan_hash": False},
+            "up": {"mutates_target": True, "machine_output": True, "accepts_plan_hash": False},
             "apply": {
                 "mutates_target": True,
                 "machine_output": True,
                 "accepts_plan_hash": True,
             },
-            "stop": {"mutates_target": True, "machine_output": True},
-            "down": {"mutates_target": True, "machine_output": True},
+            "stop": {"mutates_target": True, "machine_output": True, "accepts_plan_hash": False},
+            "down": {"mutates_target": True, "machine_output": True, "accepts_plan_hash": False},
         },
         "config_schemas": ["pg_stand/v1"],
         "states": [

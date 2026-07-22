@@ -9,7 +9,7 @@ ACTIVE_CONFIG=
 
 pg_stand() {
   if [ -n "$PG_STAND_POSTGRES_VERSION" ]; then
-    "$PG_STAND_BIN" --postgres-version "$PG_STAND_POSTGRES_VERSION" \
+    "$PG_STAND_BIN" --pg-version "$PG_STAND_POSTGRES_VERSION" \
       --tls -c "$ACTIVE_CONFIG" "$@"
   else
     "$PG_STAND_BIN" --tls -c "$ACTIVE_CONFIG" "$@"

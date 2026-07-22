@@ -193,7 +193,7 @@ Set the PostgreSQL major in `spec.postgres.version` or override it for one comma
 ```bash
 pg-stand \
   -c configs/primary-standby-async.yaml \
-  --postgres-version 18 \
+  --pg-version 18 \
   up
 ```
 
@@ -262,7 +262,8 @@ are never passed to them. The `logs` command reads the active CSV file recorded 
 
 Managed builds validate image-schema, family, major, and base-image labels. Changing
 `base_image` therefore cannot silently reuse an incompatible local image with the same tag.
-The default PostgreSQL 10 base is `postgres:10-bullseye`; other versions use
+The default PostgreSQL 10 and 11 bases use `postgres:<version>-bullseye`, so managed-image
+builds do not depend on archived Debian Stretch repositories. Later versions use
 `postgres:<version>`.
 
 ## Certificate-only TLS
@@ -403,7 +404,7 @@ pg-stand -c CONFIG storage clean
 
 ## Stand lifecycle
 
-Global options (`-c`, `--postgres-version`, `--tls`/`--no-tls`, and `--json`) precede the command.
+Global options (`-c`, `--pg-version`, `--tls`/`--no-tls`, and `--json`) precede the command. `--postgres-version` remains a compatibility alias.
 
 ```bash
 pg-stand init [--directory PATH] [--force]
@@ -673,7 +674,7 @@ docker image ls \
   --filter label=io.pg-stand.managed=true \
   --filter label=io.pg-stand.resource-kind=managed-image
 
-docker image inspect pg-stand/postgres:17-pg-stand-managed
+docker image inspect pg-stand/postgres:18-pg-stand-managed
 
 docker system df -v
 ```
@@ -899,7 +900,7 @@ python -m build
 python -m twine check dist/*
 ```
 
-A tag matching the package version, for example `v0.2.0`, runs unit and Docker integration
+A tag matching the package version, for example `v0.2.1`, runs unit and Docker integration
 tests, builds the wheel and source distribution, smoke-tests the installed wheel, and publishes
 through PyPI Trusted Publishing. The GitHub `pypi` environment and a PyPI trusted publisher for
 `O2eg/pg_stand` and `.github/workflows/publish.yml` must be configured before the first release.

@@ -140,6 +140,16 @@ def test_pg10_uses_explicit_legacy_base_image() -> None:
     assert config.postgres.base_image_name == "postgres:10-bullseye"
 
 
+def test_pg11_avoids_archived_debian_stretch_base() -> None:
+    config = load_config(
+        ASSET_ROOT / "configs" / "single.yaml",
+        environment={},
+        postgres_version=11,
+    )
+
+    assert config.postgres.base_image_name == "postgres:11-bullseye"
+
+
 def test_environment_interpolation_remains_available_for_custom_configs(tmp_path: Path) -> None:
     path = _changed_config(
         tmp_path,

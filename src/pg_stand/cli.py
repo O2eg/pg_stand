@@ -502,6 +502,10 @@ def _run_machine(args: argparse.Namespace) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.component_capabilities:
+        args.command = "capabilities"
+    elif args.command is None:
+        parser.error("a command is required")
     if args.machine:
         return _run_machine(args)
     try:

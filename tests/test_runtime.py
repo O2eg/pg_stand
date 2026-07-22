@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,9 +36,31 @@ from pg_stand.runtime import (
     standby_bootstrap_script,
     standby_postgres_command,
 )
+from pg_stand.runtime_common import (
+    IMAGE_BASE_LABEL,
+    IMAGE_FAMILY_LABEL,
+    IMAGE_MAJOR_LABEL,
+    IMAGE_PGBOUNCER_LABEL,
+    IMAGE_RESOURCE_KIND,
+    IMAGE_SCHEMA_LABEL,
+    IMAGE_SCHEMA_VERSION,
+    PGBOUNCER_VERSION,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSET_ROOT = ROOT / "src" / "pg_stand"
+
+
+@pytest.fixture(scope="session")
+def credential_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    project = tmp_path_factory.mktemp("credential-template")
+    return ensure_credentials(project, output=lambda _: None).root
+
+
+def copy_credential_template(template: Path, project: Path) -> None:
+    destination = project / ".pg_stand" / "credentials"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(template, destination)
 
 
 class _Resource:
@@ -128,7 +151,8 @@ def test_credentials_are_generated_once_outside_the_repository_tree(tmp_path: Pa
     assert clean_credentials(tmp_path) is False
 
 
-def test_credentials_reject_unexpected_entries(tmp_path: Path) -> None:
+def test_credentials_reject_unexpected_entries(tmp_path: Path, credential_template: Path) -> None:
+    copy_credential_template(credential_template, tmp_path)
     paths = ensure_credentials(tmp_path, output=lambda _: None)
     (paths.ssh / "unexpected.key").write_text("not managed", encoding="utf-8")
 
@@ -137,7 +161,10 @@ def test_credentials_reject_unexpected_entries(tmp_path: Path) -> None:
         ensure_credentials(tmp_path, output=lambda _: None)
 
 
-def test_credentials_reject_mismatched_certificate_keys(tmp_path: Path) -> None:
+def test_credentials_reject_mismatched_certificate_keys(
+    tmp_path: Path, credential_template: Path
+) -> None:
+    copy_credential_template(credential_template, tmp_path)
     paths = ensure_credentials(tmp_path, output=lambda _: None)
     (paths.tls / "postgres.key").write_text("not a private key\n", encoding="utf-8")
 
@@ -149,7 +176,10 @@ def test_credentials_reject_mismatched_certificate_keys(tmp_path: Path) -> None:
         ensure_credentials(tmp_path, output=lambda _: None)
 
 
-def test_database_credentials_reject_duplicate_passwords(tmp_path: Path) -> None:
+def test_database_credentials_reject_duplicate_passwords(
+    tmp_path: Path, credential_template: Path
+) -> None:
+    copy_credential_template(credential_template, tmp_path)
     paths = ensure_credentials(tmp_path, output=lambda _: None)
     document = json.loads(paths.database_passwords.read_text(encoding="utf-8"))
     document["applications"][1]["password"] = document["applications"][0]["password"]
@@ -176,7 +206,9 @@ def test_credentials_cannot_escape_through_a_symlink(tmp_path: Path) -> None:
         ensure_credentials(project, output=lambda _: None)
 
 
-def test_container_has_postgres_ssh_and_resource_limits(tmp_path: Path) -> None:
+def test_container_has_postgres_ssh_and_resource_limits(
+    tmp_path: Path, credential_template: Path
+) -> None:
     config = load_config(
         ASSET_ROOT / "configs" / "single.yaml",
         environment={},
@@ -185,6 +217,7 @@ def test_container_has_postgres_ssh_and_resource_limits(tmp_path: Path) -> None:
     client = MagicMock()
     client.containers.list.return_value = []
     manager = StandManager(config, client=client)
+    copy_credential_template(credential_template, tmp_path)
     ensure_credentials(tmp_path, output=lambda _: None)
 
     manager._ensure_database_container(
@@ -318,6 +351,33 @@ def test_managed_dockerfile_matrix(version: int, dockerfile: str, family: str) -
     assert managed_dockerfile(version) == (dockerfile, family)
 
 
+def test_compatible_managed_image_is_reused_without_rebuild() -> None:
+    config = load_config(ASSET_ROOT / "configs" / "single.yaml", environment={})
+    _dockerfile, family = managed_dockerfile(config.postgres.version)
+    image = MagicMock()
+    image.attrs = {
+        "Config": {
+            "Labels": {
+                IMAGE_SCHEMA_LABEL: IMAGE_SCHEMA_VERSION,
+                IMAGE_BASE_LABEL: config.postgres.base_image_name,
+                IMAGE_FAMILY_LABEL: family,
+                IMAGE_MAJOR_LABEL: str(config.postgres.version),
+                IMAGE_PGBOUNCER_LABEL: PGBOUNCER_VERSION,
+                MANAGED_LABEL: "true",
+                RESOURCE_KIND_LABEL: IMAGE_RESOURCE_KIND,
+            }
+        }
+    }
+    client = MagicMock()
+    client.images.get.return_value = image
+    manager = StandManager(config, client=client)
+
+    manager._ensure_image()
+
+    client.images.get.assert_called_once_with(config.postgres.image_name)
+    client.images.build.assert_not_called()
+
+
 def test_planning_statistics_are_enabled_only_when_supported() -> None:
     pg12 = dict(diagnostic_postgres_settings(12))
     pg13 = dict(diagnostic_postgres_settings(13))
@@ -370,10 +430,13 @@ def test_declarative_parameters_are_written_to_a_separate_config_file() -> None:
     )
 
 
-def test_existing_cluster_superuser_password_is_reapplied(tmp_path: Path) -> None:
+def test_existing_cluster_superuser_password_is_reapplied(
+    tmp_path: Path, credential_template: Path
+) -> None:
     config = load_config(
         ASSET_ROOT / "configs" / "single.yaml", environment={}, project_directory=tmp_path
     )
+    copy_credential_template(credential_template, tmp_path)
     paths = ensure_credentials(tmp_path, output=lambda _: None)
     password = read_database_credentials(paths.database).superuser_password
     manager = StandManager(config, client=object())
@@ -389,10 +452,13 @@ def test_existing_cluster_superuser_password_is_reapplied(tmp_path: Path) -> Non
     assert psql.call_args.kwargs == {"synchronous_commit_off": True}
 
 
-def test_application_roles_and_databases_are_created_idempotently(tmp_path: Path) -> None:
+def test_application_roles_and_databases_are_created_idempotently(
+    tmp_path: Path, credential_template: Path
+) -> None:
     config = load_config(
         ASSET_ROOT / "configs" / "single.yaml", environment={}, project_directory=tmp_path
     )
+    copy_credential_template(credential_template, tmp_path)
     paths = ensure_credentials(tmp_path, output=lambda _: None)
     credentials = read_database_credentials(paths.database)
     manager = StandManager(config, client=object())
@@ -516,7 +582,9 @@ def test_bootstrap_supports_pre_and_post_postgres_12_recovery() -> None:
     assert 'PGSSLKEY="$TLS_RUNTIME_ROOT/replicator.key"' in script
 
 
-def test_tls_standby_bootstrap_uses_certificates_without_password_conninfo(tmp_path: Path) -> None:
+def test_tls_standby_bootstrap_uses_certificates_without_password_conninfo(
+    tmp_path: Path, credential_template: Path
+) -> None:
     config = load_config(
         ASSET_ROOT / "configs" / "primary-standby-sync-logical.yaml",
         environment={},
@@ -530,6 +598,7 @@ def test_tls_standby_bootstrap_uses_certificates_without_password_conninfo(tmp_p
     helper.logs.return_value = b""
     client.containers.run.return_value = helper
     manager = StandManager(config, client=client)
+    copy_credential_template(credential_template, tmp_path)
     ensure_credentials(tmp_path, output=lambda _: None)
 
     manager._prepare_standby_data(
@@ -784,10 +853,13 @@ def test_applied_state_cannot_escape_through_a_symlink(tmp_path: Path) -> None:
         StandManager(config, client=object())._read_applied_state()
 
 
-def test_connection_info_redacts_password_by_default(tmp_path: Path) -> None:
+def test_connection_info_redacts_password_by_default(
+    tmp_path: Path, credential_template: Path
+) -> None:
     config = load_config(
         ASSET_ROOT / "configs" / "single.yaml", environment={}, project_directory=tmp_path
     )
+    copy_credential_template(credential_template, tmp_path)
     paths = ensure_credentials(tmp_path, output=lambda _: None)
     expected = read_database_credentials(paths.database).superuser_password
     manager = StandManager(config, client=object())
@@ -822,7 +894,9 @@ def test_tls_connection_info_uses_client_certificate_and_no_password() -> None:
 
 
 @pytest.mark.parametrize("tls_enabled", [False, True])
-def test_connection_info_brackets_ipv6_hosts(tls_enabled: bool, tmp_path: Path) -> None:
+def test_connection_info_brackets_ipv6_hosts(
+    tls_enabled: bool, tmp_path: Path, credential_template: Path
+) -> None:
     config = load_config(
         ASSET_ROOT / "configs" / "single.yaml",
         environment={},
@@ -831,6 +905,7 @@ def test_connection_info_brackets_ipv6_hosts(tls_enabled: bool, tmp_path: Path) 
     )
     config = replace(config, primary=replace(config.primary, bind_address="::1"))
     manager = StandManager(config, client=object())
+    copy_credential_template(credential_template, tmp_path)
     ensure_credentials(tmp_path, output=lambda _: None)
 
     info = manager.connection_info("primary", show_password=True)

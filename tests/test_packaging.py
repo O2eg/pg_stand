@@ -34,7 +34,7 @@ def test_distribution_metadata_matches_public_package_contract() -> None:
     assert project["license-files"] == ["LICENSE"]
     assert project["authors"] == [{"name": "O2eg", "email": "oleg.ispu@yandex.ru"}]
     assert project["urls"] == {
-        "Homepage": "https://github.com/O2eg/pg_stand",
+        "Homepage": "https://o2eg.com/",
         "Repository": "https://github.com/O2eg/pg_stand",
         "Issues": "https://github.com/O2eg/pg_stand/issues",
     }

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pg-stand"
-version = "0.2.1"
+version = "0.2.2"
 description = "Declarative Docker testbed manager for PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -52,7 +52,7 @@ dev = [
 pg-stand = "pg_stand.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/O2eg/pg_stand"
+Homepage = "https://o2eg.com/"
 Repository = "https://github.com/O2eg/pg_stand"
 Issues = "https://github.com/O2eg/pg_stand/issues"
 

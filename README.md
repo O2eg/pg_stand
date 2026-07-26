@@ -900,7 +900,7 @@ python -m build
 python -m twine check dist/*
 ```
 
-A tag matching the package version, for example `v0.2.1`, runs unit and Docker integration
+A tag matching the package version, for example `v0.2.2`, runs unit and Docker integration
 tests, builds the wheel and source distribution, smoke-tests the installed wheel, and publishes
 through PyPI Trusted Publishing. The GitHub `pypi` environment and a PyPI trusted publisher for
 `O2eg/pg_stand` and `.github/workflows/publish.yml` must be configured before the first release.

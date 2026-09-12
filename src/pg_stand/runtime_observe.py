@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from pg_stand.config import NodeConfig
-from pg_stand.database_credentials import APPLICATION_ACCOUNTS, APPLICATION_DATABASES
+from pg_stand.database_credentials import APPLICATION_ACCOUNTS
 from pg_stand.errors import DockerRuntimeError
 from pg_stand.runtime_common import (
     CONFIG_HASH_LABEL,
@@ -412,7 +412,8 @@ class ObservationMixin:
                 }
             )
             missing_by_database: dict[str, list[str]] = {}
-            for database in APPLICATION_DATABASES:
+            diagnostic_databases = self._diagnostic_databases(container)
+            for database in diagnostic_databases:
                 extension_output = self._psql(
                     container,
                     "select extname from pg_catalog.pg_extension where extname = any (array["
@@ -428,9 +429,10 @@ class ObservationMixin:
                 {
                     "id": f"node.{node_name}.extensions",
                     "status": "healthy" if not missing_by_database else "degraded",
-                    "summary": "all diagnostic extensions are installed in all 10 databases"
+                    "summary": "diagnostic extensions are installed in all connectable databases"
                     if not missing_by_database
-                    else "diagnostic extensions are missing from application databases",
+                    else "diagnostic extensions are missing from connectable databases",
+                    "databases": diagnostic_databases,
                     "missing_by_database": missing_by_database,
                 }
             )

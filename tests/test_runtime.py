@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,8 @@ from pg_stand.runtime import (
     standby_postgres_command,
 )
 from pg_stand.runtime_common import (
+    DIAGNOSTIC_EXTENSIONS,
+    DIAGNOSTIC_PRELOADS,
     IMAGE_BASE_LABEL,
     IMAGE_FAMILY_LABEL,
     IMAGE_MAJOR_LABEL,
@@ -49,6 +52,37 @@ from pg_stand.runtime_common import (
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSET_ROOT = ROOT / "src" / "pg_stand"
+
+
+def test_diagnostic_extensions_cover_existing_and_future_databases(tmp_path: Path) -> None:
+    config = load_config(ASSET_ROOT / "configs" / "single.yaml", project_directory=tmp_path)
+    manager = StandManager(config, client=object())
+    container = object()
+    databases = ["app_01", "custom\ndb", "postgres", "template1"]
+
+    def psql(_container, sql, **kwargs):
+        if "pg_available_extensions" in sql:
+            return "\n".join(DIAGNOSTIC_EXTENSIONS)
+        if "pg_catalog.pg_database" in sql:
+            assert "datallowconn" in sql and "datname <> 'template0'" in sql
+            return json.dumps(databases)
+        if sql == "show shared_preload_libraries":
+            return ",".join(DIAGNOSTIC_PRELOADS)
+        return ""
+
+    manager._exec = MagicMock()
+    manager._psql = MagicMock(side_effect=psql)
+    manager._ensure_diagnostic_extensions(container)
+    installed = {
+        (call.kwargs["database"], call.args[1])
+        for call in manager._psql.call_args_list
+        if call.args[1].startswith("create extension")
+    }
+    assert installed == {
+        (database, f'create extension if not exists "{extension}"')
+        for database in databases
+        for extension in DIAGNOSTIC_EXTENSIONS
+    }
 
 
 @pytest.fixture(scope="session")
@@ -275,6 +309,47 @@ def test_readiness_waits_for_final_postgres_pid_one() -> None:
     command = container.exec_run.call_args.args[0]
     assert command[:2] == ["/bin/sh", "-ceu"]
     assert "/proc/1/comm" in command[2]
+
+
+@pytest.mark.parametrize(
+    ("pid_one", "children", "child_processes", "ready"),
+    [
+        ("postgres", "", {}, True),
+        ("docker-init", "7 ", {"7": "postgres"}, True),
+        ("docker-init", "7 84 ", {"7": "bash", "84": "postgres"}, False),
+        ("docker-init", "", {}, False),
+        ("bash", "84 ", {"84": "postgres"}, False),
+    ],
+)
+def test_readiness_checks_final_server_behind_docker_init(
+    tmp_path: Path, pid_one: str, children: str, child_processes: dict[str, str], ready: bool
+) -> None:
+    config = load_config(ASSET_ROOT / "configs" / "single.yaml", environment={})
+    manager = StandManager(config, client=object())
+    container = MagicMock(status="running")
+    container.exec_run.return_value = SimpleNamespace(exit_code=0, output=b"ready")
+    manager._wait_for_postgres(container, timeout_seconds=5)
+    command = container.exec_run.call_args.args[0]
+
+    proc = tmp_path / "proc"
+    (proc / "1/task/1").mkdir(parents=True)
+    (proc / "1/comm").write_text(pid_one + "\n")
+    (proc / "1/task/1/children").write_text(children)
+    for pid, process in child_processes.items():
+        (proc / pid).mkdir()
+        (proc / pid / "comm").write_text(process + "\n")
+    probe = tmp_path / "pg_isready"
+    probe.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    probe.chmod(0o755)
+    script = command[2].replace("/proc/", "./proc/").replace("exec pg_isready", "exec ./pg_isready")
+    result = subprocess.run(
+        [*command[:2], script, *command[3:]], cwd=tmp_path, text=True, capture_output=True
+    )
+    assert (result.returncode == 0) is ready, result.stderr
+    if ready:
+        assert result.stdout.splitlines() == ["--username", "postgres", "--dbname", "postgres"]
+    else:
+        assert "waiting for final postgres process" in result.stdout
 
 
 def test_active_lock_rejects_a_second_project() -> None:

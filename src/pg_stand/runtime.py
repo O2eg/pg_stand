@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shlex
 import time
 from collections.abc import Callable
@@ -15,7 +16,6 @@ from pg_stand.config import MANAGED_RESOURCE_SUFFIX, NodeConfig, StandConfig
 from pg_stand.credentials import credential_paths, credentials_status, ensure_credentials
 from pg_stand.database_credentials import (
     APPLICATION_ACCOUNTS,
-    APPLICATION_DATABASES,
     DEFAULT_REPLICATION_USER,
     DatabaseCredentials,
     read_database_credentials,
@@ -393,6 +393,11 @@ class _StandManagerCore:
                 nano_cpus=int(node.cpu_limit * 1_000_000_000),
                 mem_limit=node.memory_limit,
                 restart_policy={"Name": "unless-stopped"},
+                # Without an init process the postmaster is PID 1 and adopts orphaned
+                # children (docker exec/ssh pipelines). PostgreSQL 18 treats an unknown
+                # child exiting with a non-zero status as a backend crash and restarts
+                # the whole cluster (observed 2026-09-11 on pg-trace: exit code 141).
+                init=True,
             )
         except APIError as exc:
             raise DockerRuntimeError(
@@ -460,8 +465,16 @@ class _StandManagerCore:
                     "/bin/sh",
                     "-ceu",
                     """process=$(cat /proc/1/comm)
+if [ "$process" = "docker-init" ]; then
+  # Its first child is the entrypoint, which execs the final server. Later
+  # children may include the temporary initdb server adopted by docker-init.
+  for child in $(cat /proc/1/task/1/children); do
+    process=$(cat "/proc/$child/comm")
+    break
+  done
+fi
 if [ "$process" != "postgres" ]; then
-  echo "container PID 1 is $process, waiting for final postgres process"
+  echo "container main process is $process, waiting for final postgres process"
   exit 1
 fi
 exec pg_isready --username "$1" --dbname postgres
@@ -563,7 +576,11 @@ exec pg_isready --username "$1" --dbname postgres
                 f"image {self.config.postgres.image_name} lacks diagnostic extensions: "
                 + ", ".join(missing)
             )
-        for database in APPLICATION_DATABASES:
+        # Include postgres and template1, so databases created later inherit the
+        # same diagnostic support. Keep template0 pristine and non-connectable
+        # databases untouched.
+        databases = self._diagnostic_databases(container)
+        for database in databases:
             for extension in DIAGNOSTIC_EXTENSIONS:
                 self._psql(
                     container,
@@ -581,6 +598,16 @@ exec pg_isready --username "$1" --dbname postgres
             raise DockerRuntimeError(
                 "unexpected shared_preload_libraries order: " + ",".join(actual_preloads)
             )
+
+    def _diagnostic_databases(self, container: Any) -> list[str]:
+        value = self._psql(
+            container,
+            "select coalesce(json_agg(datname order by datname), '[]'::json)::text "
+            "from pg_catalog.pg_database where datallowconn and datname <> 'template0'",
+            database=self.config.postgres.database,
+            synchronous_commit_off=True,
+        )
+        return json.loads(value)
 
     def _ensure_superuser_password(self, container: Any) -> None:
         self._psql(

@@ -219,9 +219,10 @@ avoided; the runtime selects a compatible image family automatically.
 Every managed image installs PgBouncer 1.25.2, `iproute2`, `lshw`, OpenSSH server, `procps`,
 `sysstat`, `util-linux`, plus the `pg_wait_sampling` and `pg_stat_kcache` packages. Every node
 runs independent PgBouncer processes for session pooling on container port 6432 and transaction
-pooling on container port 6433. Every application
-database from `app_01` through `app_10` automatically gets `pg_stat_statements`,
-`pg_wait_sampling`, `pg_buffercache`, and `pg_stat_kcache`. The `auto_explain` module is also
+pooling on container port 6433. Every connectable database, including `app_01` through
+`app_10`, `postgres`, and `template1`, automatically gets `pg_stat_statements`,
+`pg_wait_sampling`, `pg_buffercache`, and `pg_stat_kcache`. New databases created from
+`template1` inherit these extensions; `template0` remains pristine. The `auto_explain` module is also
 loaded through
 `shared_preload_libraries`. Planning tracking for `pg_stat_statements` and `pg_stat_kcache` is
 enabled only on PostgreSQL 13 and newer.

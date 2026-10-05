@@ -182,6 +182,12 @@ class StateStorageMixin:
             "desired_state_hash": self.config.config_hash,
             "applied_state_hash": state.get("config_hash") if state else None,
         }
+        if self._find_active_lock() is not None:
+            try:
+                self._assert_current_stand_is_active()
+            except DockerRuntimeError as exc:
+                result.update(required_action="blocked", can_apply=False, reason=str(exc))
+                return self._finalize_plan(result)
         if state is None:
             result.update(
                 {

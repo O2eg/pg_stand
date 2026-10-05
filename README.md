@@ -464,6 +464,8 @@ stand is stopped or removed. `stop` and `down` release the lock. A failed partia
 the lock when it has already started a database node, so another stand cannot start around the
 failure. Destructive storage cleanup retains the lock until mounted data and credentials are no
 longer being changed, which prevents a concurrent `up` from racing with deletion.
+`plan` reports `blocked` when the active lease belongs to another stand or project
+directory, before suggesting `up` or an apply operation.
 
 Persistent container and network names must end with `-pg-stand-managed`. Every resource also
 has mandatory project, project-directory instance, managed, resource-kind, node, and

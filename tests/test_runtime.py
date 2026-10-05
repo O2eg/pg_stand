@@ -400,6 +400,40 @@ def test_active_lock_is_created_with_exclusive_managed_identity() -> None:
     assert kwargs["labels"][RESOURCE_KIND_LABEL] == "active-lock"
 
 
+@pytest.mark.parametrize("applied", [False, True])
+def test_plan_reports_foreign_active_stand_before_claiming_it_can_apply(
+    tmp_path: Path,
+    applied: bool,
+) -> None:
+    config = load_config(ASSET_ROOT / "configs" / "single.yaml", project_directory=tmp_path)
+    client = MagicMock()
+    client.networks.list.return_value = [
+        _Resource(
+            {
+                "Labels": {
+                    PROJECT_LABEL: "another-stand",
+                    MANAGED_LABEL: "true",
+                    RESOURCE_KIND_LABEL: "active-lock",
+                }
+            },
+            name=ACTIVE_LOCK_NETWORK,
+        ),
+    ]
+    manager = StandManager(config, client=client)
+    if applied:
+        manager._record_applied_state()
+    blocked = manager.plan()
+    assert blocked["required_action"] == "blocked"
+    assert blocked["can_apply"] is False
+    assert "another-stand" in blocked["reason"]
+    client.networks.create.assert_not_called()
+    client.containers.run.assert_not_called()
+    client.networks.list.return_value = []
+    available = manager.plan()
+    assert available["required_action"] == ("none" if applied else "up")
+    assert available["plan_hash"] != blocked["plan_hash"]
+
+
 @pytest.mark.parametrize(
     ("version", "pgdata", "data_mount"),
     [

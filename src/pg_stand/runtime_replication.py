@@ -9,6 +9,7 @@ from typing import Any
 from docker.errors import ContainerError, DockerException
 
 from pg_stand.errors import DockerRuntimeError
+from pg_stand.locking import serialized
 from pg_stand.runtime_common import (
     MANAGED_RESOURCE_SUFFIX,
     PGLOG,
@@ -736,6 +737,7 @@ rm -f "$dump_file"
             volumes={str(paths.root): {"bind": STORAGE_ROOT, "mode": "rw"}},
         )
 
+    @serialized
     def logical_sync(
         self,
         *,

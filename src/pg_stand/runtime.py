@@ -21,9 +21,11 @@ from pg_stand.database_credentials import (
     read_database_credentials,
 )
 from pg_stand.errors import DockerRuntimeError
+from pg_stand.locking import serialized
 from pg_stand.runtime_common import (
     ACTIVE_LOCK_NETWORK,
     CONFIG_HASH_LABEL,
+    CREDENTIAL_ROOT_LABEL,
     DIAGNOSTIC_EXTENSIONS,
     DIAGNOSTIC_PRELOADS,
     INSTANCE_LABEL,
@@ -36,11 +38,14 @@ from pg_stand.runtime_common import (
     PGWAL,
     PROJECT_LABEL,
     RESOURCE_KIND_LABEL,
+    STORAGE_ROOT_LABEL,
     NodeStoragePaths,
     _sql_identifier,
     _sql_literal,
+    active_lock_name,
     diagnostic_postgres_settings,
     discover_active_stand,
+    discover_stands,
     effective_postgres_parameters,
     logging_postgres_settings,
     logical_postgres_command,
@@ -69,6 +74,7 @@ __all__ = [
     "StandManager",
     "diagnostic_postgres_settings",
     "discover_active_stand",
+    "discover_stands",
     "effective_postgres_parameters",
     "logging_postgres_settings",
     "managed_dockerfile",
@@ -130,6 +136,11 @@ class _StandManagerCore:
         }
         if node:
             labels[NODE_LABEL] = node
+        if resource_kind == "active-lock":
+            labels[STORAGE_ROOT_LABEL] = str(self.config.storage_root)
+            labels[CREDENTIAL_ROOT_LABEL] = str(
+                credential_paths(self.config.project_directory).root
+            )
         return labels
 
     def _managed_filters(
@@ -154,6 +165,7 @@ class _StandManagerCore:
             )
         containers = self.client.containers.list(
             all=True,
+            ignore_removed=True,
             filters=self._managed_filters(
                 resource_kind="stand-node",
                 project=self.config.metadata.name,
@@ -168,6 +180,7 @@ class _StandManagerCore:
             )
         containers = self.client.containers.list(
             all=True,
+            ignore_removed=True,
             filters=self._managed_filters(
                 resource_kind="helper",
                 project=self.config.metadata.name,
@@ -193,7 +206,16 @@ class _StandManagerCore:
             filters=self._managed_filters(resource_kind="active-lock", project=None)
         )
         return next(
-            (network for network in networks if network.name == ACTIVE_LOCK_NETWORK),
+            (
+                network
+                for network in networks
+                if network.name == active_lock_name(self.config.instance_id)
+                or (
+                    network.name == ACTIVE_LOCK_NETWORK
+                    and (network.attrs.get("Labels") or {}).get(INSTANCE_LABEL)
+                    == self.config.instance_id
+                )
+            ),
             None,
         )
 
@@ -210,20 +232,20 @@ class _StandManagerCore:
                 lock,
                 "active stand lock",
                 check_hash=False,
-                expected_name=ACTIVE_LOCK_NETWORK,
+                expected_name=lock.name,
                 expected_kind="active-lock",
             )
             return False
         try:
             self.client.networks.create(
-                ACTIVE_LOCK_NETWORK,
+                active_lock_name(self.config.instance_id),
                 driver="bridge",
                 labels=self._labels(resource_kind="active-lock"),
                 check_duplicate=True,
             )
         except APIError as exc:
             raise DockerRuntimeError(
-                "cannot acquire the global active-stand lock; another pg-stand process "
+                "cannot acquire the project active-stand lock; another pg-stand process "
                 f"may be starting a stand: {exc}"
             ) from exc
         return True
@@ -239,10 +261,10 @@ class _StandManagerCore:
             lock,
             "active stand lock",
             check_hash=False,
-            expected_name=ACTIVE_LOCK_NETWORK,
+            expected_name=lock.name,
             expected_kind="active-lock",
         )
-        self.output(f"RELEASE active_lock={ACTIVE_LOCK_NETWORK}")
+        self.output(f"RELEASE active_lock={lock.name}")
         lock.remove()
 
     def _has_running_owned_nodes(self) -> bool:
@@ -361,13 +383,14 @@ class _StandManagerCore:
         container = self._owned_container(node, node_name)
         if container is not None:
             container.reload()
+            self._connect_external_networks(container)
             if container.status != "running":
                 self.output(f"START node={node_name} container={node.container_name}")
                 container.start()
             return container
         self.output(f"CREATE node={node_name} container={node.container_name}")
         try:
-            return self.client.containers.run(
+            container = self.client.containers.run(
                 self.config.postgres.image_name,
                 command=command,
                 name=node.container_name,
@@ -399,6 +422,8 @@ class _StandManagerCore:
                 # the whole cluster (observed 2026-09-11 on pg-trace: exit code 141).
                 init=True,
             )
+            self._connect_external_networks(container)
+            return container
         except APIError as exc:
             raise DockerRuntimeError(
                 f"cannot create {node_name} container {node.container_name}: {exc}"
@@ -659,6 +684,7 @@ $pg_stand$;
                     synchronous_commit_off=True,
                 )
 
+    @serialized
     def up(self, *, timeout_seconds: float = 180.0) -> dict[str, Any]:
         self._ping()
         self._assert_up_configuration_is_applied()
@@ -667,6 +693,7 @@ $pg_stand$;
     def _activate(self, *, timeout_seconds: float) -> dict[str, Any]:
         acquired_lock = self._acquire_active_lock()
         try:
+            self._assert_resource_conflicts()
             result = self._up_locked(timeout_seconds=timeout_seconds)
             self._record_applied_state()
             return result
@@ -820,7 +847,7 @@ $pg_stand$;
             lock,
             "active stand lock",
             check_hash=False,
-            expected_name=ACTIVE_LOCK_NETWORK,
+            expected_name=lock.name,
             expected_kind="active-lock",
         )
 
@@ -841,6 +868,7 @@ $pg_stand$;
             )
         return contexts
 
+    @serialized
     def apply(
         self,
         *,
@@ -917,6 +945,7 @@ $pg_stand$;
             "nodes": applied_nodes,
         }
 
+    @serialized
     def stop(self, *, timeout_seconds: int = 30) -> None:
         self._ping()
         for node_name, node in self._configured_nodes():
@@ -929,6 +958,7 @@ $pg_stand$;
                 container.stop(timeout=timeout_seconds)
         self._release_active_lock()
 
+    @serialized
     def down(
         self,
         *,
@@ -938,6 +968,7 @@ $pg_stand$;
     ) -> None:
         self._ping()
         if clear_data:
+            self._assert_storage_unshared()
             self._acquire_active_lock()
         helper_name = f"{self.config.metadata.name}-standby-bootstrap{MANAGED_RESOURCE_SUFFIX}"
         self._remove_stale_helper(helper_name, check_hash=False)
@@ -968,6 +999,7 @@ $pg_stand$;
         if release_lock:
             self._release_active_lock()
 
+    @serialized
     def recreate(
         self,
         *,

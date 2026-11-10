@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import docker
 from docker.errors import (
     DockerException,
+    NotFound,
 )
 
 from pg_stand.config import MANAGED_RESOURCE_SUFFIX, StandConfig
@@ -21,17 +23,19 @@ CONFIG_HASH_LABEL = "io.pg-stand.config-hash"
 MAJOR_LABEL = "io.pg-stand.postgres-major"
 MANAGED_LABEL = "io.pg-stand.managed"
 RESOURCE_KIND_LABEL = "io.pg-stand.resource-kind"
+STORAGE_ROOT_LABEL = "io.pg-stand.storage-root"
+CREDENTIAL_ROOT_LABEL = "io.pg-stand.credential-root"
 ACTIVE_LOCK_NETWORK = f"pg-stand-active-lock{MANAGED_RESOURCE_SUFFIX}"
 PGWAL = "/pgwal"
 PGLOG = "/pglog"
 STORAGE_ROOT = "/pg-stand-storage"
 IMAGE_SCHEMA_LABEL = "io.pg-stand.image-schema"
-IMAGE_SCHEMA_VERSION = "6"
+IMAGE_SCHEMA_VERSION = "7"
 IMAGE_BASE_LABEL = "io.pg-stand.base-image"
 IMAGE_FAMILY_LABEL = "io.pg-stand.image-family"
 IMAGE_MAJOR_LABEL = "io.pg-stand.postgres-major"
 IMAGE_PGBOUNCER_LABEL = "io.pg-stand.pgbouncer-version"
-PGBOUNCER_VERSION = "1.25.2"
+PGBOUNCER_VERSION = "1.26.1"
 PGBOUNCER_SESSION_PORT = 6432
 PGBOUNCER_TRANSACTION_PORT = 6433
 IMAGE_RESOURCE_KIND = "managed-image"
@@ -76,8 +80,12 @@ def _resource_labels(resource: Any) -> dict[str, str]:
     return attrs.get("Labels") or (attrs.get("Config") or {}).get("Labels") or {}
 
 
-def discover_active_stand(*, client: Any | None = None) -> dict[str, Any]:
-    """Discover the single active pg-stand lease without reading a YAML file."""
+def active_lock_name(instance_id: str) -> str:
+    return f"pg-stand-active-{instance_id}{MANAGED_RESOURCE_SUFFIX}"
+
+
+def discover_stands(*, client: Any | None = None) -> dict[str, Any]:
+    """List project leases, including a lease left by an older pg-stand."""
     docker_client = client or docker.from_env()
     try:
         if not docker_client.ping():
@@ -92,16 +100,35 @@ def discover_active_stand(*, client: Any | None = None) -> dict[str, Any]:
         )
     except DockerException as exc:
         raise DockerRuntimeError(f"cannot connect to Docker daemon: {exc}") from exc
-    lock = next(
-        (
-            item
-            for item in locks
-            if item.name == ACTIVE_LOCK_NETWORK and item.name.endswith(MANAGED_RESOURCE_SUFFIX)
-        ),
-        None,
-    )
-    if lock is None:
-        return {"active": False, "project": None, "nodes": {}}
+    stands = []
+    for lock in locks:
+        labels = _resource_labels(lock)
+        if lock.name not in {ACTIVE_LOCK_NETWORK, active_lock_name(labels.get(INSTANCE_LABEL, ""))}:
+            continue
+        if labels.get(MANAGED_LABEL) != "true" or labels.get(RESOURCE_KIND_LABEL) != "active-lock":
+            continue
+        stands.append(_discover_lease(docker_client, lock))
+    stands.sort(key=lambda stand: (stand["project"], stand["instance_id"]))
+    return {"stands": stands}
+
+
+def discover_active_stand(
+    *, client: Any | None = None, project_directory: Path | None = None, name: str | None = None
+) -> dict[str, Any]:
+    stands = discover_stands(client=client)["stands"]
+    if project_directory is not None:
+        instance = hashlib.sha256(str(project_directory.resolve()).encode("utf-8")).hexdigest()
+        stands = [stand for stand in stands if stand["instance_id"] == instance]
+    if name is not None:
+        stands = [stand for stand in stands if stand["project"] == name]
+    if len(stands) > 1:
+        raise DockerRuntimeError(
+            "multiple active stands; select --project DIR or active --name NAME"
+        )
+    return stands[0] if stands else {"active": False, "project": None, "nodes": {}}
+
+
+def _discover_lease(docker_client: Any, lock: Any) -> dict[str, Any]:
     labels = _resource_labels(lock)
     project = labels.get(PROJECT_LABEL)
     if not project:
@@ -111,6 +138,7 @@ def discover_active_stand(*, client: Any | None = None) -> dict[str, Any]:
         raise DockerRuntimeError("active pg-stand lock has no instance ownership label")
     containers = docker_client.containers.list(
         all=True,
+        ignore_removed=True,
         filters={
             "label": [
                 f"{MANAGED_LABEL}=true",
@@ -124,7 +152,10 @@ def discover_active_stand(*, client: Any | None = None) -> dict[str, Any]:
     for container in containers:
         if not container.name.endswith(MANAGED_RESOURCE_SUFFIX):
             continue
-        container.reload()
+        try:
+            container.reload()
+        except NotFound:
+            continue
         container_labels = _resource_labels(container)
         node = container_labels.get(NODE_LABEL)
         if node not in {"primary", "standby", "logical"}:
@@ -153,7 +184,7 @@ def discover_active_stand(*, client: Any | None = None) -> dict[str, Any]:
         "active": True,
         "project": project,
         "instance_id": instance,
-        "lock": ACTIVE_LOCK_NETWORK,
+        "lock": lock.name,
         "postgres_version": labels.get(MAJOR_LABEL),
         "config_hash": labels.get(CONFIG_HASH_LABEL),
         "nodes": nodes,
@@ -330,6 +361,15 @@ def primary_postgres_command(config: StandConfig) -> list[str]:
     settings.extend(tls_postgres_settings(config))
     settings.append(("shared_preload_libraries", ",".join(DIAGNOSTIC_PRELOADS)))
     replication = config.topology.replication
+    decoding = config.postgres.logical_decoding
+    if decoding is not None:
+        settings.extend(
+            [
+                ("wal_level", "logical"),
+                ("max_wal_senders", str(decoding.max_wal_senders)),
+                ("max_replication_slots", str(decoding.max_replication_slots)),
+            ]
+        )
     if replication is not None:
         settings.extend(
             [

@@ -7,7 +7,6 @@ import json
 import os
 import shutil
 import tempfile
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ from docker.errors import ContainerError, DockerException, ImageNotFound
 
 from pg_stand.credentials import credential_paths
 from pg_stand.errors import DockerRuntimeError
+from pg_stand.locking import serialized
 from pg_stand.orchestration import canonical_hash
 from pg_stand.runtime_common import (
     PGLOG,
@@ -75,7 +75,7 @@ class StateStorageMixin:
         return path
 
     def _configuration_signature(self, *, include_parameters: bool) -> str:
-        document = asdict(self.config)
+        document = self.config.configuration_document()
         document.pop("source", None)
         document.pop("project_directory", None)
         if not include_parameters:
@@ -175,6 +175,7 @@ class StateStorageMixin:
         result: dict[str, Any] = {
             "project": self.config.metadata.name,
             "requested_mode": requested_mode,
+            "instance_id": self.config.instance_id,
             "required_action": "none",
             "can_apply": True,
             "configuration_changes": [],
@@ -188,6 +189,11 @@ class StateStorageMixin:
             except DockerRuntimeError as exc:
                 result.update(required_action="blocked", can_apply=False, reason=str(exc))
                 return self._finalize_plan(result)
+        try:
+            self._assert_resource_conflicts()
+        except DockerRuntimeError as exc:
+            result.update(required_action="blocked", can_apply=False, reason=str(exc))
+            return self._finalize_plan(result)
         if state is None:
             result.update(
                 {
@@ -291,6 +297,7 @@ class StateStorageMixin:
             key: result.get(key)
             for key in (
                 "project",
+                "instance_id",
                 "required_action",
                 "configuration_changes",
                 "parameter_changes",
@@ -571,14 +578,18 @@ done
         }
         return result
 
+    @serialized
     def storage_init(self) -> dict[str, Any]:
         self._ping()
+        self._assert_storage_unshared()
         self._ensure_image()
         self._prepare_storage()
         return self.storage_status()
 
+    @serialized
     def storage_clean(self, *, require_absent_containers: bool = True) -> dict[str, Any]:
         self._ping()
+        self._assert_storage_unshared()
         self._ensure_image()
         if require_absent_containers:
             for node_name, node in self._configured_nodes():

@@ -21,8 +21,9 @@ from pg_stand.assets import initialize_project
 from pg_stand.cli_parser import _parser
 from pg_stand.config import StandConfig, load_config
 from pg_stand.errors import DockerRuntimeError, PgStandError, PreconditionError
+from pg_stand.locking import project_operation
 from pg_stand.orchestration import EXIT_CODES, envelope, static_capabilities
-from pg_stand.runtime import StandManager, discover_active_stand
+from pg_stand.runtime import StandManager, discover_active_stand, discover_stands
 
 _DURATION_RE = re.compile(r"^(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>[smhd])$")
 
@@ -131,6 +132,18 @@ def _emit_pretty_logs(records: list[dict[str, Any]]) -> None:
 
 
 def _execute(args: argparse.Namespace, config: StandConfig) -> int:
+    mutates = args.command in {"up", "apply", "stop", "restart", "recreate", "down", "logical"}
+    mutates |= args.command == "cleanup" and args.cleanup_command == "run"
+    mutates |= args.command == "storage" and args.storage_command in {"init", "clean"}
+    mutates |= args.command == "node" and args.node_command == "restart"
+    mutates |= args.command == "standby"
+    if mutates and not getattr(args, "dry_run", False):
+        with project_operation(config.project_directory):
+            return _execute_command(args, config)
+    return _execute_command(args, config)
+
+
+def _execute_command(args: argparse.Namespace, config: StandConfig) -> int:
     if args.command == "validate":
         result = {
             "valid": True,
@@ -332,8 +345,8 @@ def _execute(args: argparse.Namespace, config: StandConfig) -> int:
             result = manager.cleanup(
                 remove_containers=args.containers or args.all,
                 remove_storage=args.storage or args.all,
-                remove_images=args.images or args.all,
-                remove_cache=args.cache or args.all,
+                remove_images=args.images,
+                remove_cache=args.cache,
                 remove_credentials=args.all,
                 stop_timeout_seconds=args.stop_timeout,
             )
@@ -442,11 +455,14 @@ def _run_machine(args: argparse.Namespace) -> int:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             if args.command == "active":
-                result = discover_active_stand()
+                result = discover_active_stand(project_directory=args.project, name=args.name)
                 exit_code = 0 if result["active"] else 1
                 print(json.dumps(result))
+            elif args.command == "list":
+                print(json.dumps(discover_stands()))
+                exit_code = 0
             elif args.command == "init":
-                result = initialize_project(args.directory, force=args.force)
+                result = initialize_project(args.directory or args.project or ".", force=args.force)
                 exit_code = 0
                 print(json.dumps(result))
             elif args.command == "capabilities" and args.config is None:
@@ -458,6 +474,7 @@ def _run_machine(args: argparse.Namespace) -> int:
                     raise DockerRuntimeError(f"--config is required for {args.command}")
                 config = load_config(
                     args.config,
+                    project_directory=args.project,
                     postgres_version=args.postgres_version,
                     tls_enabled=args.tls,
                     postgres_parameters=_postgres_parameters_override(args.parameters_json),
@@ -510,12 +527,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_machine(args)
     try:
         if args.command == "active":
-            result = discover_active_stand()
+            result = discover_active_stand(project_directory=args.project, name=args.name)
             _emit(result, as_json=args.json)
             return 0 if result["active"] else 1
+        if args.command == "list":
+            _emit(discover_stands(), as_json=args.json)
+            return 0
         if args.command == "init":
             _emit(
-                initialize_project(args.directory, force=args.force),
+                initialize_project(args.directory or args.project or ".", force=args.force),
                 as_json=args.json,
             )
             return 0
@@ -526,6 +546,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise DockerRuntimeError(f"--config is required for {args.command}")
         config = load_config(
             args.config,
+            project_directory=args.project,
             postgres_version=args.postgres_version,
             tls_enabled=args.tls,
             postgres_parameters=_postgres_parameters_override(args.parameters_json),

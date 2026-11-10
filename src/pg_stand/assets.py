@@ -11,6 +11,7 @@ from pg_stand.errors import PgStandError
 PACKAGE_ROOT = Path(__file__).resolve().parent
 PROFILE_FILES = (
     "single.yaml",
+    "single-logical.yaml",
     "primary-standby-async.yaml",
     "primary-standby-sync.yaml",
     "primary-standby-sync-logical.yaml",

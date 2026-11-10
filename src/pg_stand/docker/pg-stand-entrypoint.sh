@@ -100,6 +100,10 @@ prepare_tls_files
 prepare_ssh_authorized_key
 write_auth_templates
 install_auth_files
+# A restarted container has a new PID namespace but retains its writable layer.
+# Remove stale PID files before either pooler can reuse a previous process ID.
+rm -f /run/pg-stand-pgbouncer/pgbouncer-session.pid \
+      /run/pg-stand-pgbouncer/pgbouncer-transaction.pid
 ssh-keygen -A
 /usr/sbin/sshd
 /usr/local/bin/pg-stand-pgbouncer wait-and-start &

@@ -7,3 +7,4 @@ __pycache__/
 dist/
 build/
 .pg_stand/
+.pg_stand-operation.lock

@@ -48,6 +48,7 @@ from pg_stand.runtime_common import (
     IMAGE_SCHEMA_LABEL,
     IMAGE_SCHEMA_VERSION,
     PGBOUNCER_VERSION,
+    active_lock_name,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -278,6 +279,7 @@ def test_container_has_postgres_ssh_and_resource_limits(
     }
     client.containers.list.assert_called_once_with(
         all=True,
+        ignore_removed=True,
         filters={
             "label": [
                 "io.pg-stand.managed=true",
@@ -352,7 +354,7 @@ def test_readiness_checks_final_server_behind_docker_init(
         assert "waiting for final postgres process" in result.stdout
 
 
-def test_active_lock_rejects_a_second_project() -> None:
+def test_active_lock_rejects_a_second_profile_in_the_same_project() -> None:
     config = load_config(ASSET_ROOT / "configs" / "single.yaml", environment={})
     client = MagicMock()
     client.networks.list.return_value = [
@@ -360,6 +362,7 @@ def test_active_lock_rejects_a_second_project() -> None:
             {
                 "Labels": {
                     PROJECT_LABEL: "another-pg-stand-project",
+                    INSTANCE_LABEL: config.instance_id,
                     MANAGED_LABEL: "true",
                     RESOURCE_KIND_LABEL: "active-lock",
                 }
@@ -392,7 +395,7 @@ def test_active_lock_is_created_with_exclusive_managed_identity() -> None:
     assert manager._acquire_active_lock() is True
 
     kwargs = client.networks.create.call_args.kwargs
-    assert client.networks.create.call_args.args == (ACTIVE_LOCK_NETWORK,)
+    assert client.networks.create.call_args.args == (active_lock_name(config.instance_id),)
     assert kwargs["check_duplicate"] is True
     assert kwargs["labels"][PROJECT_LABEL] == "pg-stand-single"
     assert kwargs["labels"][INSTANCE_LABEL] == config.instance_id
@@ -412,6 +415,7 @@ def test_plan_reports_foreign_active_stand_before_claiming_it_can_apply(
             {
                 "Labels": {
                     PROJECT_LABEL: "another-stand",
+                    INSTANCE_LABEL: config.instance_id,
                     MANAGED_LABEL: "true",
                     RESOURCE_KIND_LABEL: "active-lock",
                 }
@@ -1372,7 +1376,7 @@ def test_cleanup_retains_active_lock_until_credentials_are_removed() -> None:
     }
     client = MagicMock()
     client.ping.return_value = True
-    client.containers.list.side_effect = [[own], []]
+    client.containers.list.side_effect = [[own], [own], []]
     manager = StandManager(config, client=client)
 
     with (
@@ -1547,9 +1551,9 @@ def test_managed_dockerfiles_carry_cleanup_ownership_labels() -> None:
         "Dockerfile.pg18",
     ):
         text = (ASSET_ROOT / "docker" / filename).read_text(encoding="utf-8")
-        assert 'io.pg-stand.image-schema="6"' in text
+        assert 'io.pg-stand.image-schema="7"' in text
         assert 'io.pg-stand.pgbouncer-version="${PGBOUNCER_VERSION}"' in text
-        assert "ARG PGBOUNCER_VERSION=1.25.2" in text
+        assert "ARG PGBOUNCER_VERSION=1.26.1" in text
         assert '"pgbouncer=${pgbouncer_package_version}"' in text
         assert "pg_stand_test.pub" not in text
         assert 'io.pg-stand.managed="true"' in text

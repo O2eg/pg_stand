@@ -47,6 +47,8 @@ def static_capabilities() -> dict[str, Any]:
         "component": COMPONENT,
         "component_version": __version__,
         "commands": {
+            "list": {"mutates_target": False, "machine_output": True, "accepts_plan_hash": False},
+            "active": {"mutates_target": False, "machine_output": True, "accepts_plan_hash": False},
             "capabilities": {
                 "mutates_target": False,
                 "machine_output": True,
@@ -71,6 +73,14 @@ def static_capabilities() -> dict[str, Any]:
             "down": {"mutates_target": True, "machine_output": True, "accepts_plan_hash": False},
         },
         "config_schemas": ["pg_stand/v1"],
+        "stand_isolation": {
+            "multiple_projects": True,
+            "active_stands_per_project": 1,
+            "project_option": "--project",
+            "explicit_names_and_ports": True,
+            "external_networks": True,
+            "standalone_logical_decoding": True,
+        },
         "states": [
             "planned",
             "running",

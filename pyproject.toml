@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pg-stand"
-version = "0.2.4"
+version = "0.3.0"
 description = "Declarative Docker testbed manager for PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -72,6 +72,14 @@ pg_stand = [
   "docker/Dockerfile.*",
   "docker/*.sh",
   "schema/*.json",
+]
+
+[tool.setuptools.data-files]
+"share/doc/pg-stand" = ["README.md"]
+"share/doc/pg-stand/docs" = [
+  "docs/multiple-stands.md",
+  "docs/pg_play-integration.md",
+  "docs/recovery.md",
 ]
 
 [tool.pytest.ini_options]

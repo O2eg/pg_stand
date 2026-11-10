@@ -118,16 +118,19 @@ write_config() {
 
 process_is_running() {
   pidfile=$1
+  config=$2
   [ -s "$pidfile" ] || return 1
   pid=$(cat "$pidfile")
-  kill -0 "$pid" 2>/dev/null
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ "$(readlink "/proc/$pid/exe")" = "$(command -v pgbouncer)" ] || return 1
+  tr '\000' '\n' < "/proc/$pid/cmdline" | grep -Fx -- "$config" >/dev/null
 }
 
 start_or_reload() {
   mode=$1
   config=$2
   pidfile=$RUNTIME_ROOT/pgbouncer-$mode.pid
-  if process_is_running "$pidfile"; then
+  if process_is_running "$pidfile" "$config"; then
     kill -HUP "$(cat "$pidfile")"
     return 0
   fi

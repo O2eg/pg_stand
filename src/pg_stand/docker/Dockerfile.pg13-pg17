@@ -3,9 +3,9 @@ FROM ${POSTGRES_BASE_IMAGE}
 
 ARG POSTGRES_BASE_IMAGE
 ARG PG_MAJOR=17
-ARG PGBOUNCER_VERSION=1.25.2
+ARG PGBOUNCER_VERSION=1.26.1
 
-LABEL io.pg-stand.image-schema="6" \
+LABEL io.pg-stand.image-schema="7" \
       io.pg-stand.managed="true" \
       io.pg-stand.resource-kind="managed-image" \
       io.pg-stand.image-family="pg13-pg17" \

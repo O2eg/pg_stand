@@ -57,11 +57,16 @@ jobs:
       - name: Run Docker integration test
         run: PG_STAND_BIN=pg-stand sh tests/integration_tls.sh
 
+      - name: Run independent stand integration test
+        run: python tests/integration_multistand.py
+
       - name: Build wheel and source distribution
         run: python -m build
 
       - name: Check distribution metadata and README rendering
-        run: python -m twine check dist/*
+        run: |
+          python -m twine check dist/*
+          python tests/check_distribution.py dist/*.whl dist/*.tar.gz
 
       - name: Smoke-test the built wheel
         shell: bash

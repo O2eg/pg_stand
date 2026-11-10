@@ -45,9 +45,10 @@ The ownership boundary is deliberately narrow:
  Resources without both pg-stand ownership labels and the managed name suffix are out of scope.
 ```
 
-Four topologies are included:
+Five profiles are included:
 
 - a single PostgreSQL server;
+- a single server with logical decoding enabled for externally managed migrations;
 - a primary with an asynchronous physical standby;
 - a primary with a synchronous physical standby;
 - a primary with a synchronous physical standby and a separate `app_01` all-tables logical
@@ -135,7 +136,7 @@ pg-stand -c configs/single.yaml validate
 ```
 
 The distribution name and installed command are `pg-stand`; the import package is `pg_stand`.
-The wheel includes the four example profiles, public JSON Schema, Dockerfiles, entrypoint, and
+The wheel includes the five example profiles, public JSON Schema, Dockerfiles, entrypoint, and
 PgBouncer launcher. Managed-image builds therefore do not depend on a source checkout.
 
 `pg-stand init` writes editable copies of the profiles and schema into the selected project. It
@@ -143,12 +144,27 @@ is idempotent when those files are unchanged and refuses to overwrite local edit
 `pg-stand init --force` only when the bundled versions should replace those edits. A different
 directory can be initialized with `pg-stand init --directory PATH`.
 
-Upgrade an existing installation with:
+Upgrade the installed package without replacing project configuration:
 
 ```bash
 python -m pip install --upgrade pg-stand
-pg-stand init --force
+pg-stand --version
 ```
+
+To review updated templates, initialize a separate temporary directory:
+
+```bash
+pg_stand_templates=$(mktemp -d "${TMPDIR:-/tmp}/pg-stand-templates.XXXXXX")
+pg-stand init --directory "$pg_stand_templates"
+diff -ru configs "$pg_stand_templates/configs"
+```
+
+`diff` exits with status 1 when it finds differences. Back up your project YAML, then merge
+the desired changes and review `validate` and `plan` before applying them. Copy the new schema
+from the temporary directory if you use it for editor validation. `init --force` replaces
+whole profile files without merging or backing up local edits; it is not an upgrade step.
+Package upgrades do not replace running containers. See [recovery and upgrades](docs/recovery.md)
+for applying a managed-image update while preserving data.
 
 ### Install from source
 
@@ -166,9 +182,21 @@ cd local-stand
 
 ## Quick start
 
-Requirements are Python 3.10+, Docker Engine, OpenSSL, `ssh-keygen`, and a command executed from
-the project root. The current project directory is the storage boundary: `pg-stand` refuses to
-create managed storage outside it.
+The supported host environment is Linux with Python 3.10+, Docker Engine, OpenSSL, and
+`ssh-keygen`. The user running `pg-stand` needs access to the Docker daemon and permission to
+create files in the project directory. Lifecycle locking requires POSIX `fcntl`/`flock`;
+native Windows is unsupported. Docker Desktop and remote-daemon setups are not covered by
+the integration tests. Bind-mount source paths must refer to the same project files on the
+daemon host; `DOCKER_HOST` alone does not transfer those files.
+
+Run commands from the project root or select it with `--project DIR`. Configuration paths
+remain relative to the caller's working directory. The selected project is the storage
+boundary: `pg-stand` refuses to create managed storage outside it.
+
+Host connection examples additionally require `psql`, `pgbench`, the OpenSSH client, and
+`jq`. The direct Docker examples and TLS integration script require the `docker` CLI;
+normal lifecycle commands use the Docker SDK. Managed-image builds need network access to
+the configured image registry and package repositories.
 
 ```bash
 pg-stand init
@@ -183,6 +211,7 @@ Ready-to-use profiles:
 
 ```text
 configs/single.yaml
+configs/single-logical.yaml
 configs/primary-standby-async.yaml
 configs/primary-standby-sync.yaml
 configs/primary-standby-sync-logical.yaml
@@ -202,7 +231,8 @@ official PostgreSQL image. Both the fixed tag suffix and mandatory image ownersh
 required before cleanup can see or remove an image. Override the base through
 `spec.postgres.base_image`; a template such as
 `registry/image:{version}` is allowed. Set `spec.postgres.image` to use a complete custom image
-and disable the managed build.
+and disable the managed build. A custom image must satisfy the runtime requirements below;
+an unmodified `postgres:<version>` image is not sufficient.
 
 ## PostgreSQL versions and diagnostic images
 
@@ -216,7 +246,7 @@ avoided; the runtime selects a compatible image family automatically.
 | 13–17 | bundled `Dockerfile.pg13-pg17` | Execution and planning kernel statistics |
 | 18 | bundled `Dockerfile.pg18` | Planning statistics and the new official-image layout |
 
-Every managed image installs PgBouncer 1.25.2, `iproute2`, `lshw`, OpenSSH server, `procps`,
+Every managed image installs PgBouncer 1.26.1, `iproute2`, `lshw`, OpenSSH server, `procps`,
 `sysstat`, `util-linux`, plus the `pg_wait_sampling` and `pg_stat_kcache` packages. Every node
 runs independent PgBouncer processes for session pooling on container port 6432 and transaction
 pooling on container port 6433. Every connectable database, including `app_01` through
@@ -239,6 +269,39 @@ The diagnostic profile maximizes statistics collection within each supported maj
 These aggressive test settings, especially `auto_explain.log_analyze` with per-node timing at
 100 ms, add measurable overhead. They are intentional for diagnostic stands and are not a
 production tuning recommendation.
+
+### Custom image requirements
+
+`spec.postgres.base_image` changes the input to the bundled build. That build expects the
+Debian-based official-image layout, `apt-get`, and compatible PostgreSQL package repositories.
+`spec.postgres.image` bypasses the build entirely: the operator must supply the complete
+runtime and keep it compatible with the selected PostgreSQL major.
+
+| Area | Required behavior |
+|---|---|
+| PostgreSQL | Matching server and client tools, including `psql`, `pg_dump`, `pg_restore`, `pg_basebackup`, `initdb`, and `pg_config`; the `postgres` OS account and `/var/run/postgresql` socket directory |
+| Diagnostics | `pg_stat_statements`, `pg_wait_sampling`, `pg_buffercache`, `pg_stat_kcache`, and `auto_explain`, built for that major; the managed preload list cannot be disabled |
+| Entrypoint | Preserve `/usr/local/bin/pg-stand-entrypoint` and the official `/usr/local/bin/docker-entrypoint.sh` interface, including `POSTGRES_*`, `PGDATA`, initdb arguments, and initialization scripts |
+| Services | `/usr/local/bin/pg-stand-pgbouncer` with both pool modes, plus key-only root SSH on port 22; managed images currently supply PgBouncer 1.26.1 |
+| Privileges and tools | Start the entrypoint and storage/bootstrap helpers as root, then run PostgreSQL as `postgres`; retain `/bin/sh`, `runuser`, and the filesystem utilities supplied by the bundled image |
+| Storage | PostgreSQL 10–17 use `/var/lib/postgresql/data`; 18 uses `/var/lib/postgresql/18/docker` under the `/var/lib/postgresql` mount. WAL and logs use `/pgwal` and `/pglog` |
+| Credentials | Consume read-only `/pg-stand-ssh-source` and, with TLS, `/pg-stand-tls-source`; install runtime TLS files under `/pg-stand-tls` with the expected ownership and modes; preserve managed HBA and certificate identity mappings |
+
+The simplest extension path is to build a managed image for the desired major, then derive
+your image from it while preserving its entrypoint, default user, tools, and services. For
+example, after `pg-stand -c configs/single.yaml image build` with PostgreSQL 18 selected:
+
+```dockerfile
+FROM pg-stand/postgres:18-pg-stand-managed
+# Add application-specific dependencies without replacing the runtime contract.
+```
+
+Build and tag that derivative yourself and put its tag in `spec.postgres.image`. Rebuild the
+derivative when its managed base changes. `pg-stand image build` only builds managed images;
+it does not rebuild custom ones. Validate a custom image with `up` and `health` in a disposable
+project, using the intended topology and TLS mode. Configuration validation alone does not
+verify image contents. The bundled Dockerfiles and entrypoint are the executable reference
+for this interface.
 
 ## Fixed CSV logging
 
@@ -356,7 +419,7 @@ under `spec.storage.root_directory`, which must resolve inside the project direc
 
 ```text
 .pg_stand/
-├── credentials/             # generated once, shared by the single active stand
+├── credentials/             # generated once, shared by profiles in this project directory
 │   ├── database/
 │   ├── ssh/
 │   └── tls/
@@ -458,45 +521,64 @@ configuration match. Unowned resources are never overwritten. A major-version mi
 `PG_VERSION` is blocked because it requires `pg_upgrade` or an explicit
 `recreate --clear-data`.
 
-Only one stand may be active per Docker daemon. `up` atomically acquires the fixed
-`pg-stand-active-lock-pg-stand-managed` network; a second profile is rejected until the active
-stand is stopped or removed. `stop` and `down` release the lock. A failed partial startup keeps
-the lock when it has already started a database node, so another stand cannot start around the
-failure. Destructive storage cleanup retains the lock until mounted data and credentials are no
-longer being changed, which prevents a concurrent `up` from racing with deletion.
-`plan` reports `blocked` when the active lease belongs to another stand or project
-directory, before suggesting `up` or an apply operation.
+Multiple stands may run on the same Docker daemon. Give each concurrently active stand a
+separate project directory, unique container/network names, and non-conflicting host ports.
+The project defaults to the current directory; `--project DIR` selects it explicitly. One
+profile may be active per project directory because its profiles share credentials.
 
-Persistent container and network names must end with `-pg-stand-managed`. Every resource also
-has mandatory project, project-directory instance, managed, resource-kind, node, and
-configuration labels. Discovery uses
-Docker label filters and exact configured names, so lifecycle operations never enumerate or
-mutate unrelated containers. A foreign resource occupying a configured name only makes Docker
-creation fail; it is not stopped or removed.
+Lifecycle operations are serialized per project. A project lease remains present during partial
+startup if a database node is already running. `stop` and `down` release only that project's
+lease. Cleanup retains it until data and credentials are no longer being changed. `plan` reports
+`blocked` for another active profile in the same directory, conflicting Docker names/ports,
+foreign bind mounts overlapping storage or credentials, or missing external networks.
+Port availability can change after planning; Docker remains the final arbiter at startup.
 
-Each node declares four loopback ports: `published_port` for PostgreSQL,
+`pg-stand list` discovers all active leases, including partial startups. `pg-stand active`
+keeps its single-result format and requires `--project DIR` or `active --name NAME` if the
+selection is ambiguous. Legacy leases remain usable by their owning project. Existing profiles
+retain their configuration hashes and data paths; newly reviewed plan hashes also bind the
+project-directory identity.
+
+For interrupted startup, conflicting leases, missing credentials, or a moved project, follow
+the [recovery procedure](docs/recovery.md) before removing resources or clearing data.
+
+See [multiple stands and migration endpoints](docs/multiple-stands.md) for a source/target
+example, cross-network connections, and integration boundaries.
+
+Managed container and network names must end with `-pg-stand-managed`. Ownership is checked
+using project, project-directory instance, managed, resource-kind, and configuration labels;
+database containers also carry a node label. Discovery uses Docker label filters and exact
+names. Conflict checks additionally enumerate other containers to inspect published ports
+and bind mounts. Foreign resources are not stopped, removed, or overwritten: a conflicting
+name, port, or storage mount blocks startup during preflight, or at Docker creation if a
+conflict appears later. Images have their own ownership labels and daemon-wide cleanup scope.
+
+Each node declares four published ports: `published_port` for PostgreSQL,
 `ssh_published_port` for SSH, `pgbouncer_session_published_port` for session pooling, and
 `pgbouncer_transaction_published_port` for transaction pooling. The single-node profile uses
 `55432`, `56432`, `57432`, and `58432`, respectively. The
 `cpu_limit` and `memory_limit` fields are also required per node. Included profiles limit every
-container to one CPU and 1 GiB RAM. `shm_size` is configured separately and does not replace
-the RAM limit.
+container to one CPU and 1 GiB RAM. Included profiles bind these ports to `127.0.0.1`.
+`bind_address` also accepts other IP addresses; `0.0.0.0` or `::` publishes on all matching
+host interfaces, subject to Docker and host networking. Choose it deliberately when remote
+access is needed. `shm_size` is configured separately and does not replace the RAM limit.
 
 `status` reports the active-project lease, configuration drift, container hostname and image,
 container-network IPv4/IPv6 addresses, gateways, published host addresses, desired limits, and
 actual Docker limits. `resources` adds one-shot CPU, memory, and PID usage and can be limited to
 one node.
 
-`active` is the only command that does not require `--config`. It discovers the fixed active
-lease and lists only containers carrying the required pg-stand ownership labels and managed
-name suffix. This is useful when the operator does not remember which profile is running.
+`active` and `list` do not require `--config`. Discovery includes only resources carrying
+the required ownership labels and managed name suffix.
 
 `health` verifies the active lease, desired/applied configuration, container and PostgreSQL
 readiness, real SQL queries through both PgBouncer instances, node roles, TLS policy and
 certificate authentication, diagnostic extensions and
 preloads, writable log storage, free space, physical streaming/synchronous state and lag, and
 logical workers/table synchronization. Its
-exit codes are `0` for healthy, `1` for degraded, and `2` for unavailable. Thresholds are
+standalone exit codes are `0` for healthy, `1` for degraded, and `2` for unavailable.
+Machine mode maps degraded results to exit code `5`; see the
+[machine exit-code reference](docs/pg_play-integration.md#exit-codes). Thresholds are
 configurable with `--max-physical-lag-bytes`, `--max-physical-lag-seconds`,
 `--max-logical-lag-seconds`, and `--min-free-bytes`. `wait` repeats the same checks until they
 pass or its timeout expires.
@@ -539,9 +621,11 @@ only images with pg-stand ownership labels and `pg-stand/postgres:*-pg-stand-man
 `cleanup status` combines PGDATA/WAL/log byte and file counts, generated credential sizes,
 Docker container writable-layer sizes, and managed image sizes. `cleanup run` requires `--force`
 plus an explicit selection of
-`--containers`, `--storage`, `--images`, or `--cache`; `--all` also selects the generated
-credentials as a fifth cleanup scope. Image removal
-requires both ownership labels and the managed tag suffix and never uses force. The cache scope
+`--containers`, `--storage`, `--images`, or `--cache`. In version 0.3, `--all` selects only
+the selected project's containers, storage, and generated credentials. Shared images and cache
+require explicit `--images` and `--cache` flags, even with `--all`. Image removal requires both
+ownership labels and the managed tag suffix, skips images referenced by any container
+(including stopped containers), and never uses force. The cache scope
 is intentionally limited to dangling images with pg-stand labels. Docker BuildKit cache is
 daemon-global and cannot safely be attributed to this application, so pg-stand never performs a
 global builder-cache prune. Removing a managed image also asks Docker to reclaim its
@@ -640,7 +724,7 @@ pg-stand -c configs/single.yaml logs primary --follow
 pg-stand -c configs/primary-standby-sync-logical.yaml logs all \
   --since 30m --severity warning --format pretty
 pg-stand --json -c configs/primary-standby-sync-logical.yaml logs all \
-  --backend-type autovacuum --contains "automatic vacuum"
+  --backend-type "autovacuum worker" --contains "automatic vacuum"
 ```
 
 `events` requests Docker events with both the managed and current-project labels, then verifies
@@ -727,8 +811,10 @@ docker exec \
   psql -h 127.0.0.1 -p 6433 -U postgres -d app_01 -c 'select current_user;'
 ```
 
-The `docker exec` examples use PostgreSQL's local Unix socket. For a TLS profile, use the host
-`psql`/`pgbench` certificate examples above when validating the externally published TCP policy.
+The `docker exec` PostgreSQL examples without `-h` use the local Unix socket. The PgBouncer
+examples with `-h 127.0.0.1` use TCP and password authentication for a non-TLS profile. For a
+TLS profile, use the host `psql`/`pgbench` certificate examples above when validating the
+externally published TCP policy.
 
 Inspect physical and logical replication directly:
 
@@ -767,7 +853,7 @@ docker exec pg-stand-single-primary-pg-stand-managed \
 
 Use lifecycle operations through `pg-stand`, not `docker stop`, `docker rm`, or
 `docker network rm`. The CLI verifies ownership, restores replication readiness, maintains the
-single-active-stand lease, and preserves the declared storage semantics.
+project-scoped active-stand lease, and preserves the declared storage semantics.
 
 ## Replication
 
@@ -815,8 +901,13 @@ app_10 -> user_app_10
 ```
 
 The ten owner passwords, the `postgres` password, and the `replicator` password are generated
-once with a cryptographic random generator. All 12 values are distinct and live only in
-`.pg_stand/credentials/database/passwords.json`, mode `0600`. The file records account names so
+once with a cryptographic random generator. All 12 values are distinct. Their persistent
+host-side source is `.pg_stand/credentials/database/passwords.json`, mode `0600`. Runtime use
+also exposes credentials to trusted processes: the superuser password is passed in the
+container's `POSTGRES_PASSWORD` environment, and non-TLS replication connection settings
+contain the replication password. Docker inspection and database administration access can
+therefore expose credentials. PostgreSQL and PgBouncer also retain authentication verifiers.
+The JSON file records account names so
 that a later profile cannot accidentally reuse it with different superuser or replication role
 names. It is reused across stand recreations and removed only by
 `cleanup run --all --force`; the next `up` then creates a new set.
@@ -848,10 +939,11 @@ The API version is `pg_stand/v1`. The strict JSON Schema is
 `schema/pg_stand-v1.schema.json`; unknown fields are errors.
 
 - `spec.postgres` defines the major, image, superuser, initdb arguments, optional TLS
-  mode, and server parameters.
+  mode, standalone `logical_decoding`, and server parameters.
 - `spec.topology` selects `single`, `primary_standby`, or `primary_standby_logical` and
   contains physical and logical replication settings.
-- `spec.docker` defines pull policy, the isolated bridge network, and additional labels.
+- `spec.docker` defines pull policy, the isolated bridge network, existing `external_networks`,
+  and additional labels.
 - `spec.storage` defines the relative host-storage root inside the project.
 - `spec.nodes` defines container names, PostgreSQL, SSH, session-pooler and transaction-pooler
   ports, bind address, CPU and RAM limits, and `/dev/shm` size.
@@ -872,13 +964,50 @@ orchestrators can use the separate [versioned machine contract](docs/pg_play-int
 ```bash
 .venv/bin/pip install -e '.[dev]'
 .venv/bin/ruff check .
+.venv/bin/ruff format --check .
 .venv/bin/pytest
-PG_STAND_BIN=.venv/bin/pg-stand sh tests/integration_tls.sh
-PG_STAND_POSTGRES_VERSION=10 PG_STAND_BIN=.venv/bin/pg-stand sh tests/integration_tls.sh
-PG_STAND_POSTGRES_VERSION=18 PG_STAND_BIN=.venv/bin/pg-stand sh tests/integration_tls.sh
 ```
 
-The Docker integration test performs real certificate-only single-node and
+The multistand test creates temporary projects, unique resource names, and selected free
+host ports, then removes its own test resources:
+
+```bash
+.venv/bin/python tests/integration_multistand.py
+```
+
+The TLS script uses fixed names and ports from `single.yaml` and
+`primary-standby-sync-logical.yaml`. It executes `recreate --clear-data` and
+`down --clear-data` in its working project. **Do not run it directly in a project containing
+data you want to keep.** Use a disposable Docker daemon or ensure these names and ports are
+free, and run it from a fresh temporary project. From the source checkout root:
+
+```bash
+(
+  set -eu
+  pg_stand_checkout=$PWD
+  pg_stand_test_major=18
+  pg_stand_test_project=$(mktemp -d "${TMPDIR:-/tmp}/pg-stand-tls.XXXXXX")
+  printf 'TLS test project: %s\n' "$pg_stand_test_project"
+  mkdir -p "$pg_stand_test_project/src/pg_stand"
+  cp -R "$pg_stand_checkout/src/pg_stand/configs" "$pg_stand_test_project/src/pg_stand/"
+  cd "$pg_stand_test_project"
+  PG_STAND_POSTGRES_VERSION="$pg_stand_test_major" \
+    PG_STAND_BIN="$pg_stand_checkout/.venv/bin/pg-stand" \
+    sh "$pg_stand_checkout/tests/integration_tls.sh"
+  "$pg_stand_checkout/.venv/bin/pg-stand" --pg-version "$pg_stand_test_major" \
+    --tls -c src/pg_stand/configs/primary-standby-sync-logical.yaml \
+    cleanup run --all --force
+)
+```
+
+Set `pg_stand_test_major=10` to exercise the legacy image family; use a new temporary project
+for each run. The script attempts container/data cleanup on exit. The final command also
+removes test credentials after success. If the run fails, inspect the printed project path
+and use the [recovery procedure](docs/recovery.md) to finish cleanup; do not remove directories
+while containers still use them. Empty project directories and copied profiles can be removed
+after inspection. Never add test projects, generated credentials, or test reports to Git.
+
+The TLS integration test performs real certificate-only single-node and
 synchronous-physical-plus-logical deployments, negative authentication checks, a short
 certificate-authenticated pgbench run, successful SQL plus plaintext-rejection checks on both
 PgBouncer pool modes, replication of a newly added `app_01` table, and a
@@ -903,10 +1032,20 @@ python -m build
 python -m twine check dist/*
 ```
 
-A tag matching the package version, for example `v0.2.2`, runs unit and Docker integration
+A tag matching the package version, for example `v0.3.0`, runs unit and Docker integration
 tests, builds the wheel and source distribution, smoke-tests the installed wheel, and publishes
 through PyPI Trusted Publishing. The GitHub `pypi` environment and a PyPI trusted publisher for
 `O2eg/pg_stand` and `.github/workflows/publish.yml` must be configured before the first release.
+
+The wheel and source distribution include the README and public guides. Installed
+documents retain their relative layout under `share/doc/pg-stand`:
+
+```bash
+python -c 'import sysconfig; print(sysconfig.get_path("data") + "/share/doc/pg-stand")'
+```
+
+The release workflow checks archive contents and relative documentation links
+with `python tests/check_distribution.py dist/*.whl dist/*.tar.gz`.
 
 ## License
 
@@ -914,4 +1053,4 @@ through PyPI Trusted Publishing. The GitHub `pypi` environment and a PyPI truste
 [MIT License](https://github.com/O2eg/pg_stand/blob/main/LICENSE). The license file is included
 in both wheel and source distributions.
 
-Primary references: [official PostgreSQL image PGDATA layout](https://github.com/docker-library/docs/blob/master/postgres/README.md#pgdata), [`initdb --waldir`](https://www.postgresql.org/docs/current/app-initdb.html), [`pg_basebackup --waldir`](https://www.postgresql.org/docs/current/app-pgbasebackup.html), [PostgreSQL TLS](https://www.postgresql.org/docs/current/ssl-tcp.html), [certificate authentication](https://www.postgresql.org/docs/current/auth-cert.html), [libpq TLS parameters](https://www.postgresql.org/docs/current/libpq-ssl.html), [PgBouncer configuration](https://www.pgbouncer.org/config), [PgBouncer 1.25.2](https://www.pgbouncer.org/2026/05/pgbouncer-1-25-2), and [logical replication restrictions](https://www.postgresql.org/docs/current/logical-replication-restrictions.html).
+Primary references: [official PostgreSQL image PGDATA layout](https://github.com/docker-library/docs/blob/master/postgres/README.md#pgdata), [`initdb --waldir`](https://www.postgresql.org/docs/current/app-initdb.html), [`pg_basebackup --waldir`](https://www.postgresql.org/docs/current/app-pgbasebackup.html), [PostgreSQL TLS](https://www.postgresql.org/docs/current/ssl-tcp.html), [certificate authentication](https://www.postgresql.org/docs/current/auth-cert.html), [libpq TLS parameters](https://www.postgresql.org/docs/current/libpq-ssl.html), [PgBouncer configuration](https://www.pgbouncer.org/config), [PgBouncer 1.26.1](https://www.pgbouncer.org/2026/10/pgbouncer-1-26-1), and [logical replication restrictions](https://www.postgresql.org/docs/current/logical-replication-restrictions.html).

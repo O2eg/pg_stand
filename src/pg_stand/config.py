@@ -73,6 +73,12 @@ class TLSConfig:
 
 
 @dataclass(frozen=True)
+class LogicalDecodingConfig:
+    max_wal_senders: int
+    max_replication_slots: int
+
+
+@dataclass(frozen=True)
 class PostgresConfig:
     version: int
     image: str | None
@@ -82,6 +88,7 @@ class PostgresConfig:
     initdb_args: str
     parameters: dict[str, str]
     tls: TLSConfig
+    logical_decoding: LogicalDecodingConfig | None = None
 
     @property
     def image_name(self) -> str:
@@ -140,6 +147,7 @@ class DockerConfig:
     pull_policy: str
     network_name: str
     labels: dict[str, str]
+    external_networks: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -189,11 +197,20 @@ class StandConfig:
 
     @property
     def config_hash(self) -> str:
-        document = asdict(self)
+        document = self.configuration_document()
         document.pop("source", None)
         document.pop("project_directory", None)
         payload = json.dumps(document, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def configuration_document(self) -> dict[str, Any]:
+        document = asdict(self)
+        # Preserve hashes and applied state for configurations predating these options.
+        if self.postgres.logical_decoding is None:
+            document["postgres"].pop("logical_decoding")
+        if not self.docker.external_networks:
+            document["docker"].pop("external_networks")
+        return document
 
     def with_postgres_version(self, version: int | None) -> StandConfig:
         if version is None:
@@ -213,7 +230,7 @@ class StandConfig:
         )
 
     def public_document(self) -> dict[str, Any]:
-        document = asdict(self)
+        document = self.configuration_document()
         document["source"] = str(self.source)
         document["project_directory"] = str(self.project_directory)
         document["resolved_storage_root"] = str(self.storage_root)
@@ -532,6 +549,7 @@ def load_config(
             "initdb_args",
             "parameters",
             "tls",
+            "logical_decoding",
         },
     )
     version = _positive_int(_required(postgres_raw, "version", "spec.postgres"), "postgres.version")
@@ -540,6 +558,21 @@ def load_config(
     parameters = _parameters(postgres_raw.get("parameters", {}))
     if postgres_parameters is not None:
         parameters.update(_parameters(postgres_parameters))
+    decoding = None
+    if "logical_decoding" in postgres_raw:
+        raw = _mapping(
+            postgres_raw["logical_decoding"],
+            "postgres.logical_decoding",
+            {"max_wal_senders", "max_replication_slots"},
+        )
+        decoding = LogicalDecodingConfig(
+            max_wal_senders=_positive_int(
+                raw.get("max_wal_senders", 10), "logical_decoding.max_wal_senders"
+            ),
+            max_replication_slots=_positive_int(
+                raw.get("max_replication_slots", 10), "logical_decoding.max_replication_slots"
+            ),
+        )
     postgres = PostgresConfig(
         version=version,
         image=(
@@ -561,6 +594,7 @@ def load_config(
         tls=TLSConfig(
             enabled=_boolean(tls_raw.get("enabled", False), "postgres.tls.enabled"),
         ),
+        logical_decoding=decoding,
     )
 
     topology_raw = _mapping(
@@ -574,6 +608,8 @@ def load_config(
             "topology.mode must be single, primary_standby, or primary_standby_logical"
         )
     replication: ReplicationConfig | None = None
+    if decoding is not None and topology_mode != "single":
+        raise ConfigError("postgres.logical_decoding requires single topology")
     logical_replication: LogicalReplicationConfig | None = None
     replication_raw = topology_raw.get("replication")
     logical_replication_raw = topology_raw.get("logical_replication")
@@ -658,11 +694,21 @@ def load_config(
     docker_raw = _mapping(
         spec.get("docker", {}),
         "spec.docker",
-        {"pull_policy", "network_name", "labels"},
+        {"pull_policy", "network_name", "labels", "external_networks"},
     )
     pull_policy = _text(docker_raw.get("pull_policy", "missing"), "docker.pull_policy")
     if pull_policy not in {"always", "missing", "never"}:
         raise ConfigError("docker.pull_policy must be always, missing, or never")
+    external_networks = docker_raw.get("external_networks", [])
+    if not isinstance(external_networks, list) or any(
+        not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name)
+        for name in external_networks
+    ):
+        raise ConfigError("docker.external_networks must be a list of network names")
+    if len(set(external_networks)) != len(external_networks):
+        raise ConfigError("docker.external_networks must not contain duplicates")
+    if any(name in {"host", "none", "bridge"} for name in external_networks):
+        raise ConfigError("docker.external_networks requires user-defined networks")
     docker = DockerConfig(
         pull_policy=pull_policy,
         network_name=_managed_resource_name(
@@ -670,7 +716,10 @@ def load_config(
             "docker.network_name",
         ),
         labels=_labels(docker_raw.get("labels", {})),
+        external_networks=tuple(external_networks),
     )
+    if docker.network_name in docker.external_networks:
+        raise ConfigError("external_networks must not include the stand-owned network")
 
     storage_raw = _mapping(
         spec.get("storage", {}),
@@ -740,6 +789,13 @@ def load_config(
         or resolved_project_directory not in storage_root.parents
     ):
         raise ConfigError("storage.root_directory must resolve inside the project directory")
+    credentials_root = (resolved_project_directory / ".pg_stand" / "credentials").resolve()
+    if (
+        storage_root == credentials_root
+        or storage_root in credentials_root.parents
+        or credentials_root in storage_root.parents
+    ):
+        raise ConfigError("storage.root_directory must not overlap project credentials")
 
     config = StandConfig(
         source=source,

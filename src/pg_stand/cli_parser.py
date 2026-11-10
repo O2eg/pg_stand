@@ -60,8 +60,9 @@ def _parser() -> argparse.ArgumentParser:
         "-c",
         "--config",
         type=Path,
-        help="path to a pg_stand/v1 YAML configuration; optional only for active",
+        help="path to a pg_stand/v1 YAML configuration",
     )
+    parser.add_argument("--project", type=Path, help="project storage directory (default: cwd)")
     parser.add_argument(
         "--pg-version",
         "--postgres-version",
@@ -96,15 +97,16 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     commands = parser.add_subparsers(dest="command")
-    commands.add_parser("active", help="discover the active pg-stand lease without a config")
+    active = commands.add_parser("active", help="discover one active stand without a config")
+    active.add_argument("--name", help="select the stand by metadata.name")
+    commands.add_parser("list", help="list all active stand leases on this Docker daemon")
     init = commands.add_parser(
         "init", help="write editable example profiles and the JSON Schema into a project"
     )
     init.add_argument(
         "--directory",
         type=Path,
-        default=Path("."),
-        help="project directory to initialize; defaults to the current directory",
+        help="project directory to initialize; defaults to --project or the current directory",
     )
     init.add_argument(
         "--force",
@@ -378,10 +380,7 @@ def _parser() -> argparse.ArgumentParser:
     cleanup_run.add_argument(
         "--all",
         action="store_true",
-        help=(
-            "select containers, storage, generated credentials, managed images, and managed "
-            "dangling images"
-        ),
+        help="select this project's containers, storage and credentials; images/cache are separate",
     )
     cleanup_run.add_argument(
         "--force",

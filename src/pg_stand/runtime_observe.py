@@ -358,6 +358,16 @@ class ObservationMixin:
         )
         if container.status != "running":
             return checks
+        attached = (container.attrs.get("NetworkSettings") or {}).get("Networks") or {}
+        for network in self.config.docker.external_networks:
+            checks.append(
+                {
+                    "id": f"node.{node_name}.network.{network}",
+                    "status": "healthy" if network in attached else "unavailable",
+                    "summary": f"external network {network} "
+                    + ("attached" if network in attached else "missing"),
+                }
+            )
         ready = container.exec_run(
             [
                 "pg_isready",
@@ -378,6 +388,22 @@ class ObservationMixin:
         if ready.exit_code != 0:
             return checks
         try:
+            decoding = self.config.postgres.logical_decoding
+            if decoding is not None and node_name == "primary":
+                expected = {
+                    "wal_level": "logical",
+                    "max_wal_senders": str(decoding.max_wal_senders),
+                    "max_replication_slots": str(decoding.max_replication_slots),
+                }
+                for name, value in expected.items():
+                    actual = self._psql(container, "show " + name).strip()
+                    checks.append(
+                        {
+                            "id": f"node.{node_name}.{name}",
+                            "status": "healthy" if actual == value else "degraded",
+                            "summary": f"{name}={actual}; expected {value}",
+                        }
+                    )
             checks.append(self._node_tls_health_check(container, node_name))
             checks.extend(self._node_pgbouncer_health_checks(container, node_name))
             recovery = self._psql(container, "select pg_catalog.pg_is_in_recovery()").strip()
@@ -652,6 +678,10 @@ class ObservationMixin:
             "features": {
                 "physical_replication": self.config.is_replicated,
                 "logical_replication": self.config.has_logical_replica,
+                "logical_decoding": (
+                    self.config.has_logical_replica
+                    or self.config.postgres.logical_decoding is not None
+                ),
                 "planning_statistics": version >= 13,
                 "auto_explain_wal": version >= 13,
                 "compute_query_id": version >= 14,

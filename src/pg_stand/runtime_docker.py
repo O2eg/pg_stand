@@ -5,14 +5,17 @@ from __future__ import annotations
 import os
 import shutil
 import socket
+from pathlib import Path
 from typing import Any
 
-from docker.errors import APIError, BuildError, ImageNotFound
+from docker.errors import APIError, BuildError, ImageNotFound, NotFound
 
 from pg_stand.assets import docker_build_context
 from pg_stand.credentials import clean_credentials, credentials_status
 from pg_stand.errors import DockerRuntimeError
+from pg_stand.locking import serialized
 from pg_stand.runtime_common import (
+    CREDENTIAL_ROOT_LABEL,
     IMAGE_BASE_LABEL,
     IMAGE_FAMILY_LABEL,
     IMAGE_MAJOR_LABEL,
@@ -27,11 +30,135 @@ from pg_stand.runtime_common import (
     PGBOUNCER_VERSION,
     PROJECT_LABEL,
     RESOURCE_KIND_LABEL,
+    STORAGE_ROOT_LABEL,
+    _resource_labels,
     managed_dockerfile,
 )
 
 
 class DockerResourceMixin:
+    def _belongs_to_current_stand(self, resource: Any) -> bool:
+        labels = _resource_labels(resource)
+        return (
+            resource.name.endswith(MANAGED_RESOURCE_SUFFIX)
+            and labels.get(MANAGED_LABEL) == "true"
+            and labels.get(PROJECT_LABEL) == self.config.metadata.name
+            and labels.get(INSTANCE_LABEL) == self.config.instance_id
+        )
+
+    def _assert_storage_unshared(self, *, credentials: bool = False) -> None:
+        roots = [self.config.storage_root]
+        if credentials:
+            roots.append(self.config.project_directory / ".pg_stand" / "credentials")
+        # Leases reserve paths before the first container or storage helper starts.
+        # This also covers two concurrent startups with overlapping project roots.
+        for lease in self.client.networks.list(
+            filters=self._managed_filters(resource_kind="active-lock", project=None)
+        ):
+            if self._belongs_to_current_stand(lease):
+                continue
+            labels = _resource_labels(lease)
+            for label in (STORAGE_ROOT_LABEL, CREDENTIAL_ROOT_LABEL):
+                if not labels.get(label):
+                    continue
+                reserved = Path(labels[label]).resolve()
+                if any(
+                    reserved == root or root in reserved.parents or reserved in root.parents
+                    for root in roots
+                ):
+                    raise DockerRuntimeError("storage or credentials overlap another stand lease")
+        for container in self.client.containers.list(all=True, ignore_removed=True):
+            if self._belongs_to_current_stand(container) and container.name in {
+                node.container_name for _, node in self._configured_nodes()
+            }:
+                continue
+            for mount in container.attrs.get("Mounts", []):
+                if mount.get("Type") != "bind" or not mount.get("Source"):
+                    continue
+                source = Path(mount["Source"]).resolve()
+                if any(
+                    source == root or root in source.parents or source in root.parents
+                    for root in roots
+                ):
+                    raise DockerRuntimeError(
+                        f"storage or credentials overlap a bind mount of {container.name}"
+                    )
+
+    def _external_networks(self) -> list[Any]:
+        result = []
+        for name in self.config.docker.external_networks:
+            try:
+                network = self.client.networks.get(name)
+            except NotFound:
+                raise DockerRuntimeError(f"external network {name} does not exist") from None
+            if _resource_labels(network).get(MANAGED_LABEL) == "true":
+                raise DockerRuntimeError(f"external network {name} must not be owned by a stand")
+            if network.attrs.get("Driver") in {"host", "null"}:
+                raise DockerRuntimeError(
+                    f"external network {name} must support container endpoints"
+                )
+            result.append(network)
+        return result
+
+    def _connect_external_networks(self, container: Any) -> None:
+        if not self.config.docker.external_networks:
+            return
+        container.reload()
+        attached = (container.attrs.get("NetworkSettings") or {}).get("Networks") or {}
+        for network in self._external_networks():
+            if network.name not in attached:
+                network.connect(container)
+
+    def _assert_resource_conflicts(self) -> None:
+        """Preflight names, Docker port bindings, mounts and external networks."""
+        names = {node.container_name for _, node in self._configured_nodes()}
+        requested = {
+            (node.bind_address, port)
+            for _, node in self._configured_nodes()
+            for port in (
+                node.published_port,
+                node.ssh_published_port,
+                node.pgbouncer_session_published_port,
+                node.pgbouncer_transaction_published_port,
+            )
+        }
+        for container in self.client.containers.list(all=True, ignore_removed=True):
+            if self._belongs_to_current_stand(container) and container.name in names:
+                continue
+            if container.name in names:
+                raise DockerRuntimeError(
+                    f"container name {container.name} belongs to another owner"
+                )
+            if container.status not in {"running", "restarting", "paused"}:
+                continue
+            bindings = (container.attrs.get("HostConfig") or {}).get("PortBindings") or {}
+            for service, endpoints in bindings.items():
+                if not service.endswith("/tcp"):
+                    continue
+                for endpoint in endpoints or []:
+                    address = endpoint.get("HostIp", "")
+                    port = int(endpoint["HostPort"])
+                    if any(
+                        port == desired_port
+                        and (
+                            address == desired_address
+                            or address in {"", "0.0.0.0", "::"}
+                            or desired_address in {"0.0.0.0", "::"}
+                        )
+                        for desired_address, desired_port in requested
+                    ):
+                        raise DockerRuntimeError(
+                            f"published port {address}:{port} is used by {container.name}"
+                        )
+        for network in self.client.networks.list(names=[self.config.docker.network_name]):
+            if (
+                network.name == self.config.docker.network_name
+                and not self._belongs_to_current_stand(network)
+            ):
+                raise DockerRuntimeError(f"network name {network.name} belongs to another owner")
+        self._assert_storage_unshared(credentials=True)
+        self._external_networks()
+
     def _ensure_image(self) -> None:
         image = self.config.postgres.image_name
         policy = self.config.docker.pull_policy
@@ -286,10 +413,18 @@ class DockerResourceMixin:
 
     def _remove_managed_images(self) -> dict[str, Any]:
         removed_tags: list[str] = []
+        skipped_tags: list[str] = []
         estimated_bytes = 0
+        in_use = {
+            container.attrs.get("Image")
+            for container in self.client.containers.list(all=True, ignore_removed=True)
+        }
         for image, legacy in self._managed_images():
             tags = self._owned_image_tags(image, legacy=legacy)
             if not tags:
+                continue
+            if image.id in in_use:
+                skipped_tags.extend(tags)
                 continue
             estimated_bytes += int(image.attrs.get("Size", 0) or 0)
             for tag in tags:
@@ -304,6 +439,7 @@ class DockerResourceMixin:
                 removed_tags.append(tag)
         return {
             "removed_tags": removed_tags,
+            "skipped_in_use_tags": skipped_tags,
             "estimated_size_bytes_including_shared_layers": estimated_bytes,
         }
 
@@ -323,6 +459,7 @@ class DockerResourceMixin:
             + int(legacy.get("SpaceReclaimed", 0) or 0),
         }
 
+    @serialized
     def cleanup(
         self,
         *,
@@ -344,6 +481,7 @@ class DockerResourceMixin:
         ):
             raise DockerRuntimeError("cleanup requires at least one cleanup scope")
         self._ping()
+        self._assert_storage_unshared(credentials=remove_credentials)
         reserve_active_lock = remove_storage or remove_credentials
         if reserve_active_lock:
             self._acquire_active_lock()

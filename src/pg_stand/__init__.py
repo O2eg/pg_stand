@@ -2,6 +2,6 @@
 
 from pg_stand.config import MANAGED_POSTGRES_PARAMETERS
 
-__version__ = "0.2.4"
+__version__ = "0.3.0"
 
 __all__ = ["MANAGED_POSTGRES_PARAMETERS", "__version__"]

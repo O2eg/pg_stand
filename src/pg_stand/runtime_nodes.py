@@ -15,6 +15,7 @@ from urllib.parse import quote, urlencode
 from pg_stand.config import NodeConfig
 from pg_stand.credentials import credential_paths
 from pg_stand.errors import DockerRuntimeError
+from pg_stand.locking import serialized
 from pg_stand.runtime_common import (
     PGLOG,
     postgres_data_paths,
@@ -87,6 +88,7 @@ class NodeOperationsMixin:
             }
         return {"project": self.config.metadata.name, "node": node_name, **details}
 
+    @serialized
     def node_restart(
         self,
         node_name: str,
@@ -133,6 +135,7 @@ class NodeOperationsMixin:
             "logical_replication": logical_state,
         }
 
+    @serialized
     def standby_reinit(
         self,
         *,

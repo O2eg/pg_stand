@@ -20,6 +20,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["postgres", "topology", "nodes"],
+      "allOf": [
+        {
+          "if": {"properties": {"postgres": {"required": ["logical_decoding"]}}},
+          "then": {"properties": {"topology": {"properties": {"mode": {"const": "single"}}}}}
+        }
+      ],
       "properties": {
         "postgres": {"$ref": "#/$defs/postgres"},
         "topology": {"$ref": "#/$defs/topology"},
@@ -53,6 +59,15 @@
         "base_image": {"type": "string", "minLength": 1},
         "superuser": {"$ref": "#/$defs/identifier"},
         "initdb_args": {"type": "string", "minLength": 1},
+        "logical_decoding": {
+          "description": "Enable logical WAL on a single-node stand without creating a subscription.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_wal_senders": {"type": "integer", "minimum": 1, "default": 10},
+            "max_replication_slots": {"type": "integer", "minimum": 1, "default": 10}
+          }
+        },
         "tls": {
           "type": "object",
           "additionalProperties": false,
@@ -132,6 +147,15 @@
       "properties": {
         "pull_policy": {"enum": ["always", "missing", "never"]},
         "network_name": {"$ref": "#/$defs/managedName"},
+        "external_networks": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+            "not": {"enum": ["host", "none", "bridge"]}
+          }
+        },
         "labels": {
           "type": "object",
           "additionalProperties": {"type": "string", "minLength": 1}

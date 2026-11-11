@@ -122,6 +122,33 @@ def test_storage_paths_and_mounts_stay_inside_project(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize("exit_code", [0, 4])
+def test_storage_helper_is_removed_together_with_its_anonymous_volumes(
+    tmp_path: Path,
+    exit_code: int,
+) -> None:
+    config = load_config(
+        ASSET_ROOT / "configs" / "single.yaml", environment={}, project_directory=tmp_path
+    )
+    client = MagicMock()
+    helper = client.containers.run.return_value
+    helper.wait.return_value = {"StatusCode": exit_code}
+    helper.logs.return_value = b"helper output\n"
+    manager = StandManager(config, client=client)
+    binds = {str(tmp_path): {"bind": "/pg-stand-storage", "mode": "rw"}}
+
+    if exit_code == 0:
+        assert manager._run_storage_helper("true", volumes=binds) == "helper output"
+    else:
+        with pytest.raises(DockerRuntimeError, match="exit status 4: helper output"):
+            manager._run_storage_helper("exit 4", volumes=binds)
+
+    # The image declares its data directory as a volume; a helper that does not mount
+    # that path gets an anonymous volume, which only a v=True removal takes with it.
+    assert "remove" not in client.containers.run.call_args.kwargs
+    helper.remove.assert_called_once_with(force=True, v=True)
+
+
 def test_storage_mounts_cannot_escape_through_node_symlinks(tmp_path: Path) -> None:
     config = load_config(
         ASSET_ROOT / "configs" / "single.yaml",

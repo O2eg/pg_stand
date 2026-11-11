@@ -415,21 +415,30 @@ fi
         environment: dict[str, str] | None = None,
     ) -> str:
         try:
-            output = self.client.containers.run(
+            helper = self.client.containers.run(
                 self.config.postgres.image_name,
                 command=[script],
                 entrypoint=["/bin/sh", "-ceu"],
-                detach=False,
-                remove=True,
+                detach=True,
                 environment=environment or {},
                 volumes=volumes,
                 labels=self._labels(node="storage-helper"),
             )
+            try:
+                exit_code = int(helper.wait()["StatusCode"])
+                output = helper.logs(stdout=exit_code == 0, stderr=exit_code != 0)
+            finally:
+                # v=True also removes the anonymous volume Docker creates for the image's
+                # declared data directory whenever the helper does not mount that path.
+                helper.remove(force=True, v=True)
         except (DockerException, ContainerError) as exc:
             raise DockerRuntimeError(f"storage helper failed: {exc}") from exc
-        if isinstance(output, bytes):
-            return output.decode("utf-8", errors="replace").strip()
-        return str(output).strip()
+        text = (
+            output.decode("utf-8", errors="replace") if isinstance(output, bytes) else str(output)
+        ).strip()
+        if exit_code != 0:
+            raise DockerRuntimeError(f"storage helper failed: exit status {exit_code}: {text}")
+        return text
 
     def _prepare_storage(self) -> None:
         self._ensure_host_storage_directories()
